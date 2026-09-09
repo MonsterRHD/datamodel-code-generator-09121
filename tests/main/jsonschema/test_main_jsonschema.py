@@ -22948,7 +22948,10 @@ def test_compound_property_name_generation(name: str, constraints: bool, entry: 
         if PYDANTIC_V2_ROOT_MODEL_DICT_KEY_FORWARD_REF_NEEDS_SORTING and name in {"enum_refs", "ref_then_any"}
         else ""
     )
-    expected_file = f"compound_property_names/{name}_{int(constraints)}{suffix}.py"
+    expected_file = COMPOUND_PROPERTY_CASES[name].get(
+        f"{name}_{int(constraints)}{suffix}.py", f"{name}_{int(constraints)}{suffix}.py"
+    )
+    expected_file = f"compound_property_names/{expected_file}"
     if entry == "cli":
         run_main_and_assert(
             input_path=input_path,
@@ -22978,7 +22981,7 @@ def test_compound_property_name_generation(name: str, constraints: bool, entry: 
     payloads = json.loads((COMPOUND_PROPERTY_PAYLOADS / f"{name}.json").read_text())
     assert_output(
         json.dumps([validator.is_valid(value) for value in payloads], indent=2) + "\n",
-        COMPOUND_PROPERTY_EXPECTED / f"{name}_runtime.txt",
+        COMPOUND_PROPERTY_EXPECTED / COMPOUND_PROPERTY_CASES[name].get(f"{name}_runtime.txt", f"{name}_runtime.txt"),
     )
     actual = []
     context = (
@@ -22997,7 +23000,10 @@ def test_compound_property_name_generation(name: str, constraints: bool, entry: 
                 with pytest.raises(ValidationError):
                     model.model_validate(value)
                 actual.append(False)
-    assert_output(json.dumps(actual, indent=2) + "\n", COMPOUND_PROPERTY_EXPECTED / f"{name}_runtime.txt")
+    assert_output(
+        json.dumps(actual, indent=2) + "\n",
+        COMPOUND_PROPERTY_EXPECTED / COMPOUND_PROPERTY_CASES[name].get(f"{name}_runtime.txt", f"{name}_runtime.txt"),
+    )
 
 
 @pytest.mark.parametrize(("case_id", "expected_file"), COMPOUND_PROPERTY_NAMES_DIAGNOSTIC_CASES.items())
