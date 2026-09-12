@@ -128,6 +128,7 @@ from datamodel_code_generator import (
     ClassNameAffixScope,
     DataModelType,
     Error,
+    GraphQLScope,
     InputFileType,
     InputModelRefStrategy,
     InvalidClassNameError,
@@ -295,6 +296,7 @@ _RawConfigValue: TypeAlias = (
     | Sequence[str]
     | Sequence[StrictTypes]
     | Sequence[OpenAPIScope]
+    | Sequence[GraphQLScope]
     | Sequence[tuple[str, str]]
     | Mapping[str, Any]
     | Mapping[str, str]
@@ -646,6 +648,7 @@ def _get_config_class() -> type[Config]:
         url: Optional[ParseResult] = None  # noqa: UP045
         strict_types: list[StrictTypes] = Field(default_factory=list)
         openapi_scopes: Optional[list[OpenAPIScope]] = Field(default_factory=lambda: [OpenAPIScope.Schemas])  # noqa: UP045
+        graphql_scopes: Optional[list[GraphQLScope]] = None  # noqa: UP045
         custom_formatters_kwargs: Optional[dict[str, str]] = None  # noqa: UP045
         watch: bool = False
         watch_delay: float = 0.5

@@ -30,6 +30,7 @@ from datamodel_code_generator.enums import (
     DataModelType,
     DefaultValueType,
     FieldTypeCollisionStrategy,
+    GraphQLScope,
     HTTPBackend,
     InputFileType,
     InputModelRefStrategy,
@@ -1356,6 +1357,16 @@ graphql_options.add_argument(
     help="Exclude __typename field from generated GraphQL models. "
     "Useful when using generated models for GraphQL mutations.",
     action="store_true",
+    default=None,
+)
+graphql_options.add_argument(
+    "--graphql-scopes",
+    help="Scopes of GraphQL model generation (default: schema). "
+    "Use 'subscription' to also emit the Subscription operation root, including its fields, "
+    "field arguments, non-null/list wrapper layers, and referenced interfaces, unions, enums, "
+    "and nested input types.",
+    choices=[o.value for o in GraphQLScope],
+    nargs="+",
     default=None,
 )
 

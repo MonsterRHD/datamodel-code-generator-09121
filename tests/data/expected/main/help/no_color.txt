@@ -643,6 +643,12 @@ GraphQL-only options:
                         Exclude __typename field from generated GraphQL
                         models. Useful when using generated models for GraphQL
                         mutations.
+  --graphql-scopes {schema,subscription} [{schema,subscription} ...]
+                        Scopes of GraphQL model generation (default: schema).
+                        Use 'subscription' to also emit the Subscription
+                        operation root, including its fields, field arguments,
+                        non-null/list wrapper layers, and referenced
+                        interfaces, unions, enums, and nested input types.
 
 General options:
   --all-jobs            Run every named job from pyproject.toml in declaration

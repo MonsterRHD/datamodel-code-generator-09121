@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 
 import black
 import pytest
+from pydantic import ValidationError
 
 from tests.main.conftest import (
     DEFAULT_VALUES_DATA_PATH,
     EXPECTED_GRAPHQL_PATH,
     GRAPHQL_DATA_PATH,
     LEGACY_BLACK_SKIP,
+    _generated_model,
     assert_generated_model_json_validation,
     run_main_and_assert,
 )
@@ -20,6 +22,8 @@ from tests.main.graphql.conftest import assert_file_content
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+from datamodel_code_generator.__main__ import Exit
 
 
 @pytest.mark.parametrize(
@@ -102,6 +106,142 @@ def test_main_graphql_root_type_references(output_file: Path) -> None:
         valid_json='{"queryRoot":{"anything":1},"ordinaryQuery":{"label":"ok"}}',
         invalid_json='{"ordinaryQuery":{"label":1}}',
         expected_error_type="string_type",
+    )
+
+
+@pytest.mark.cli_doc(
+    options=["--graphql-scopes"],
+    option_description="""Emit the GraphQL Subscription operation root with `--graphql-scopes subscription`.
+
+By default, operation roots are skipped. Adding the `subscription` scope keeps the
+Subscription root itself, its field arguments (as importable arguments models), and
+the non-null/list wrapper layers while resolving referenced interfaces, unions,
+enums, and nested input types.""",
+    input_schema="graphql/subscription_scope.graphql",
+    cli_args=["--graphql-scopes", "subscription"],
+    golden_output="graphql/subscription_scope.py",
+)
+def test_main_graphql_subscription_scope(output_file: Path) -> None:
+    """Emit the Subscription root, field argument models, and referenced types."""
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "subscription_scope.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        assert_func=assert_file_content,
+        expected_file="subscription_scope.py",
+        extra_args=["--graphql-scopes", "subscription", "--disable-timestamp"],
+        force_exec_validation=True,
+    )
+    with _generated_model(
+        output_file, "generated_graphql_subscription_scope", "Subscription"
+    ) as subscription:
+        instance = subscription(id="1", events=[])
+        assert instance.id == "1"
+        assert instance.events == []
+        assert instance.alerts is None
+        assert instance.story is None
+
+    with _generated_model(
+        output_file, "generated_graphql_subscription_scope_args", "SubscriptionEventsArguments"
+    ) as arguments:
+        assert arguments(kind="CREATED").limit == 20
+        assert arguments(kind="UPDATED", filter={"kinds": ["ARCHIVED"]}).filter.kinds[0].value == "ARCHIVED"
+        with pytest.raises(ValidationError):  # required argument omitted
+            arguments()
+
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="generated_graphql_subscription_scope_validation",
+        model_name="Subscription",
+        valid_json='{"id":"1","events":[{"__typename":"Story","id":"2","title":"hello"}]}',
+        invalid_json='{"events":[]}',
+        expected_error_type="missing",
+    )
+
+
+def test_main_graphql_subscription_root_skipped_by_default(output_file: Path) -> None:
+    """Keep omitting the Subscription root when the subscription scope is not enabled."""
+
+    def assert_subscription_skipped(output_path: Path, _: str | None, **_kwargs: object) -> None:
+        content = output_path.read_text(encoding="utf-8")
+        assert "class Subscription(" not in content
+        assert "SubscriptionEventsArguments" not in content
+        assert "class Story(" in content
+
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "subscription_scope.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        assert_func=assert_subscription_skipped,
+        expected_file=None,
+        extra_args=["--disable-timestamp"],
+    )
+
+
+def test_main_graphql_subscription_scope_cyclic_field_error(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, output_file: Path
+) -> None:
+    """Report cyclic subscription field references with a field path and no output."""
+    input_path = tmp_path / "cyclic.graphql"
+    input_path.write_text(
+        "type Query { x: String }\n"
+        "type Event { sub: Subscription }\n"
+        "type Subscription { events: Event }\n",
+        encoding="utf-8",
+    )
+    run_main_and_assert(
+        input_path=input_path,
+        output_path=output_file,
+        input_file_type="graphql",
+        extra_args=["--graphql-scopes", "subscription"],
+        expected_exit=Exit.ERROR,
+        capsys=capsys,
+        expected_stderr_contains="Subscription/events/Event/sub/Subscription",
+        output_should_not_exist=True,
+    )
+
+
+def test_main_graphql_subscription_scope_unknown_return_type_error(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, output_file: Path
+) -> None:
+    """Report subscription fields referencing the skipped Query root."""
+    input_path = tmp_path / "unknown.graphql"
+    input_path.write_text(
+        "type Query { x: String }\n"
+        "type Subscription { q: Query }\n",
+        encoding="utf-8",
+    )
+    run_main_and_assert(
+        input_path=input_path,
+        output_path=output_file,
+        input_file_type="graphql",
+        extra_args=["--graphql-scopes", "subscription"],
+        expected_exit=Exit.ERROR,
+        capsys=capsys,
+        expected_stderr_contains="Subscription/q",
+        output_should_not_exist=True,
+    )
+
+
+def test_main_graphql_subscription_scope_multiple_roots_error(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, output_file: Path
+) -> None:
+    """Report one object type serving as both the Query and Subscription root."""
+    input_path = tmp_path / "multi-root.graphql"
+    input_path.write_text(
+        "schema { query: Root subscription: Root }\n"
+        "type Root { a: String }\n",
+        encoding="utf-8",
+    )
+    run_main_and_assert(
+        input_path=input_path,
+        output_path=output_file,
+        input_file_type="graphql",
+        extra_args=["--graphql-scopes", "subscription"],
+        expected_exit=Exit.ERROR,
+        capsys=capsys,
+        expected_stderr_contains="schema/subscription/Root",
+        output_should_not_exist=True,
     )
 
 

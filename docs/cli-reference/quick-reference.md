@@ -202,6 +202,7 @@ datamodel-codegen [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename) | Exclude __typename field from generated GraphQL models. |
+| [`--graphql-scopes`](graphql-only-options.md#graphql-scopes) | Emit the GraphQL Subscription operation root with `--graphql-scopes subscription... |
 
 ### ⚙️ General Options
 
@@ -325,6 +326,7 @@ All options sorted alphabetically:
 - [`--generate-pyproject-config`](general-options.md#generate-pyproject-config) - Generate pyproject.toml configuration from CLI arguments.
 - [`--generate-schema-validators`](template-customization.md#generate-schema-validators) - Generate experimental Pydantic v2 model validators for JSON ...
 - [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename) - Exclude __typename field from generated GraphQL models.
+- [`--graphql-scopes`](graphql-only-options.md#graphql-scopes) - Emit the GraphQL Subscription operation root with `--graphql...
 - [`--help`](utility-options.md#help) - Show help message and exit
 - [`--http-backend`](base-options.md#http-backend) - Select the HTTP client backend for remote schemas.
 - [`--http-headers`](general-options.md#http-headers) - Fetch a schema from a URL with custom HTTP headers.

@@ -20,9 +20,11 @@ from datamodel_code_generator import (
     InputFileType,
     InvalidFileFormatError,
     LiteralType,
+    SchemaParseError,
     snooper_to_methods,
 )
 from datamodel_code_generator._format_types import DatetimeClassType
+from datamodel_code_generator.enums import GraphQLScope
 from datamodel_code_generator.model.enum import SPECIALIZED_ENUM_TYPE_MATCH, Enum, EnumMemberValue
 from datamodel_code_generator.parser.base import (
     DataType,
@@ -119,13 +121,26 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
         self.references: dict[str, Reference] = {}
         self.all_graphql_objects: dict[str, graphql.GraphQLNamedType] = {}
+        # Synthetic field-argument models generated for the subscription scope,
+        # keyed by model name, mapping to the subscription field they belong to.
+        self.subscription_argument_models: dict[str, str] = {}
         self.data_model_scalar_type = self.config.data_model_scalar_type
         self.data_model_union_type = self.config.data_model_union_type
         self.use_standard_collections = self.config.use_standard_collections
         self.use_union_operator = self.config.use_union_operator
+        self.graphql_scopes: list[GraphQLScope] = self.config.graphql_scopes or [GraphQLScope.Schema]
+
+    @property
+    def _subscription_scope_enabled(self) -> bool:
+        """Return whether the Subscription operation root is in generation scope."""
+        return GraphQLScope.Subscription in self.graphql_scopes
 
     def _resolve_types(self, paths: list[str], schema: graphql.GraphQLSchema) -> None:
-        root_types = {schema.query_type, schema.mutation_type, schema.subscription_type}
+        # Query and Mutation operation roots are never emitted. The Subscription
+        # root is skipped too unless the subscription generation scope is enabled.
+        root_types: set[graphql.GraphQLNamedType | None] = {schema.query_type, schema.mutation_type}
+        if not self._subscription_scope_enabled:
+            root_types.add(schema.subscription_type)
         for type_ in schema.type_map.values():
             if isinstance(type_, graphql.GraphQLUnionType):
                 root_types.difference_update(type_.types)
@@ -177,12 +192,12 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
     def _get_default(  # noqa: PLR6301
         self,
-        field: graphql.GraphQLField | graphql.GraphQLInputField,
+        field: graphql.GraphQLField | graphql.GraphQLInputField | graphql.GraphQLArgument,
         final_data_type: DataType,  # noqa: ARG002
         *,
         required: bool,  # noqa: ARG002
     ) -> Any:
-        if isinstance(field, graphql.GraphQLInputField):
+        if isinstance(field, graphql.GraphQLInputField | graphql.GraphQLArgument):
             if field.default_value == graphql.pyutils.Undefined:
                 return None
             return field.default_value
@@ -190,10 +205,12 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         return None
 
     def _has_schema_default(  # noqa: PLR6301
-        self, field: graphql.GraphQLField | graphql.GraphQLInputField
+        self, field: graphql.GraphQLField | graphql.GraphQLInputField | graphql.GraphQLArgument
     ) -> bool:
-        """Return whether a GraphQL input field defines a schema default."""
-        return isinstance(field, graphql.GraphQLInputField) and field.default_value != graphql.pyutils.Undefined
+        """Return whether a GraphQL input field or field argument defines a schema default."""
+        return isinstance(field, graphql.GraphQLInputField | graphql.GraphQLArgument) and (
+            field.default_value != graphql.pyutils.Undefined
+        )
 
     def parse_scalar(self, scalar_graphql_object: graphql.GraphQLScalarType) -> None:
         """Parse a GraphQL scalar type and add it to results."""
@@ -317,7 +334,7 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         self,
         field_name: str,
         alias: str | list[str] | None,
-        field: graphql.GraphQLField | graphql.GraphQLInputField,
+        field: graphql.GraphQLField | graphql.GraphQLInputField | graphql.GraphQLArgument,
         original_field_name: str,
         class_name: str | None = None,
     ) -> DataModelFieldBase:
@@ -464,6 +481,87 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
     def parse_object(self, graphql_object: graphql.GraphQLObjectType) -> None:
         """Parse a GraphQL object type and add it to results."""
         self.parse_object_like(graphql_object)
+        if self._subscription_scope_enabled and graphql_object is self.raw_obj.subscription_type:
+            self.parse_subscription_field_arguments(graphql_object)
+
+    def parse_subscription_field_arguments(self, subscription_object: graphql.GraphQLObjectType) -> None:
+        """Emit an importable arguments model for each argument-bearing subscription field."""
+        for original_field_name, field in subscription_object.fields.items():
+            arguments = getattr(field, "args", None)
+            if not arguments:
+                continue
+
+            model_name = self._subscription_arguments_model_name(
+                subscription_object.name, original_field_name
+            )
+            arg_fields: list[DataModelFieldBase] = []
+            exclude_field_names: set[str] = set()
+            for original_argument_name, argument in arguments.items():
+                field_name_, alias = self.model_resolver.get_valid_field_name_and_alias(
+                    original_argument_name,
+                    excludes=exclude_field_names,
+                    model_type=self.field_name_model_type,
+                    class_name=model_name,
+                )
+                exclude_field_names.add(field_name_)
+                arg_fields.append(
+                    self.parse_field(
+                        field_name_,
+                        alias,
+                        argument,
+                        original_argument_name,
+                        class_name=model_name,
+                    )
+                )
+
+            reference = Reference(
+                path=f"{[]!s}/{graphql.type.introspection.TypeKind.INPUT_OBJECT.value}/{model_name}",
+                name=model_name,
+                original_name=model_name,
+            )
+            data_model_type = self._create_data_model(
+                reference=reference,
+                fields=arg_fields,
+                custom_base_class=self._resolve_base_class(model_name),
+                custom_template_dir=self.custom_template_dir,
+                extra_template_data=self.extra_template_data,
+                path=self.current_source_path,
+                keyword_only=self.keyword_only,
+                treat_dot_as_module=self.treat_dot_as_module,
+                dataclass_arguments=self.dataclass_arguments,
+            )
+            self.generation_store.register_model(data_model_type)
+            self.subscription_argument_models[model_name] = original_field_name
+
+    def _subscription_arguments_model_name(self, root_name: str, field_name: str) -> str:
+        """Build a unique importable name for a subscription field arguments model.
+
+        Names are prefixed with the subscription root name and suffixed with
+        ``Arguments``. Clashes with schema types or other generated arguments
+        models are disambiguated with a numeric suffix so module splitting can
+        never overwrite an existing ordinary type.
+        """
+        field_part = field_name[:1].upper() + field_name[1:]
+        candidate = self.model_resolver.get_affixed_name(
+            f"{root_name}{field_part}Arguments", model_type="model"
+        )
+        used_names = {reference.name for reference in self.references.values()}
+        used_names.update(self.subscription_argument_models)
+        if candidate not in used_names:
+            return candidate
+        count = 1
+        while f"{candidate}{count}" in used_names:
+            count += 1
+        return f"{candidate}{count}"
+
+    @staticmethod
+    def _unwrap_named_type(
+        type_: graphql.GraphQLType,
+    ) -> graphql.GraphQLNamedType:
+        """Unwrap non-null/list layers and return the innermost named type."""
+        while graphql.is_wrapping_type(type_):
+            type_ = graphql.assert_wrapping_type(type_).of_type
+        return graphql.assert_named_type(type_)
 
     def parse_input_object(self, input_graphql_object: graphql.GraphQLInputObjectType) -> None:
         """Parse a GraphQL input object type and add it to results."""
@@ -494,6 +592,7 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         """Parse the raw GraphQL schema and generate all data models."""
         self.all_graphql_objects = {}
         self.references: dict[str, Reference] = {}
+        self.subscription_argument_models = {}
         self._typename_collisions = None
 
         self.support_graphql_types = {
@@ -532,6 +631,8 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
         self._resolve_types([], schema)
 
+        self._validate_subscription_scope(schema)
+
         for next_type in self.parse_order:
             for obj in self.support_graphql_types[next_type]:
                 parser_ = mapper_from_graphql_type_to_parser_method[next_type]
@@ -541,6 +642,136 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
             return
         self._typename_collisions = None
         self._resolve_typename_collisions(schema, collisions)
+
+    def _validate_subscription_scope(self, schema: graphql.GraphQLSchema) -> None:
+        """Validate the Subscription root before generating it under the subscription scope.
+
+        Failures are raised before any model is registered so an aborted run does
+        not leave partial artifacts behind:
+
+        * the same object type must not serve as the Subscription root and the
+          Query or Mutation root at the same time;
+        * subscription field return types and field argument types must resolve
+          to generated models instead of the skipped Query/Mutation roots;
+        * subscription field references must not cycle back to the Subscription
+          root.
+        """
+        if not self._subscription_scope_enabled:
+            return
+        root = schema.subscription_type
+        if root is None:
+            return
+
+        conflicting_roots = [
+            operation
+            for operation, operation_type in (
+                ("query", schema.query_type),
+                ("mutation", schema.mutation_type),
+            )
+            if operation_type is root
+        ]
+        if conflicting_roots:
+            operations = " and ".join(conflicting_roots)
+            message = (
+                f"Subscription root '{root.name}' is also assigned as the {operations} "
+                "operation root; the same root name cannot be generated under multiple operations."
+            )
+            raise SchemaParseError(message, path=["schema", "subscription", root.name])
+
+        for field_name, field in root.fields.items():
+            field_path = [root.name, field_name]
+            return_type = self._unwrap_named_type(field.type)
+            self._validate_subscription_reference(return_type, field_path, argument_reference=False)
+            for argument_name, argument in field.args.items():
+                argument_type = self._unwrap_named_type(argument.type)
+                self._validate_subscription_reference(
+                    argument_type,
+                    [*field_path, argument_name],
+                    argument_reference=True,
+                )
+
+            cycle_path = self._find_subscription_reference_cycle(schema, root, field_name, return_type)
+            if cycle_path is not None:
+                chain = " -> ".join(cycle_path)
+                message = (
+                    f"Subscription field '{root.name}.{field_name}' creates a cyclic reference back "
+                    f"to the subscription root '{root.name}': {chain}"
+                )
+                raise SchemaParseError(message, path=cycle_path)
+
+    def _validate_subscription_reference(
+        self,
+        named_type: graphql.GraphQLNamedType,
+        path: list[str],
+        *,
+        argument_reference: bool,
+    ) -> None:
+        """Reject subscription references to types that are never emitted."""
+        if named_type.name in self.references:
+            return
+        if argument_reference:
+            location = f"field argument '{path[0]}.{path[1]}({path[2]})'"
+        else:
+            location = f"field '{path[0]}.{path[1]}'"
+        message = (
+            f"Subscription {location} references '{named_type.name}', which is not emitted: "
+            "Query and Mutation operation roots remain out of scope, so subscription fields and "
+            "arguments must only reference generated schema types."
+        )
+        raise SchemaParseError(message, path=path)
+
+    def _find_subscription_reference_cycle(
+        self,
+        schema: graphql.GraphQLSchema,
+        root: graphql.GraphQLObjectType,
+        root_field_name: str,
+        start: graphql.GraphQLNamedType,
+    ) -> list[str] | None:
+        """Return a field path when a subscription field can reach the subscription root."""
+        if start is root:
+            return [root.name, root_field_name, root.name]
+
+        explored: set[graphql.GraphQLNamedType] = set()
+        pending: list[tuple[graphql.GraphQLNamedType, list[str]]] = [
+            (start, [root.name, root_field_name, start.name])
+        ]
+        while pending:
+            node, path = pending.pop()
+            if node in explored:
+                continue
+            explored.add(node)
+            for target, edge_label in self._subscription_payload_edges(schema, node):
+                target_path = [*path, edge_label]
+                if target.name != edge_label:
+                    target_path.append(target.name)
+                if target is root:
+                    return target_path
+                if target not in explored:
+                    pending.append((target, target_path))
+        return None
+
+    def _subscription_payload_edges(
+        self,
+        schema: graphql.GraphQLSchema,
+        node: graphql.GraphQLNamedType,
+    ) -> Iterator[tuple[graphql.GraphQLNamedType, str]]:
+        """Yield payload reference edges reachable from a subscription return type."""
+        if isinstance(node, graphql.GraphQLObjectType | graphql.GraphQLInterfaceType):
+            for edge_field_name, edge_field in node.fields.items():
+                named = self._unwrap_named_type(edge_field.type)
+                if isinstance(
+                    named,
+                    graphql.GraphQLObjectType | graphql.GraphQLInterfaceType | graphql.GraphQLUnionType,
+                ):
+                    yield named, edge_field_name
+            if isinstance(node, graphql.GraphQLInterfaceType):
+                implementations = schema.get_implementations(node)
+                for implementation in (*implementations.interfaces, *implementations.objects):
+                    if implementation is not node:
+                        yield implementation, implementation.name
+        elif isinstance(node, graphql.GraphQLUnionType):
+            for member in node.types:
+                yield member, member.name
 
     def _resolve_typename_collisions(
         self,

@@ -7,6 +7,5 @@ command-line = "ignored command"
 apply-default-values-for-required-fields = true
 force-optional-for-required-fields = true
 custom-class-name-generator = "ignored"
-graphql-scopes = ["schemas"]
 settings-path = "ignored.toml"
 default-value-overrides = { name = "ignored" }

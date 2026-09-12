@@ -265,6 +265,21 @@ class Book(BaseModel):
 | Scalars | Built-in scalars map to Python aliases; custom scalars can be configured |
 | Lists and non-null markers | Converted into Python collection and optionality annotations |
 | `__typename` | Included by default and removable with `--graphql-no-typename` |
+| Query/Mutation roots | Skipped by default; references to them become `Any` |
+| Subscription root | Skipped by default; emitted with `--graphql-scopes subscription` |
+
+### Subscription root generation
+
+Operation root types are omitted by default. Pass `--graphql-scopes subscription` to also
+emit the `Subscription` root as an importable model: subscription fields keep their
+non-null and list wrapper layers, and each argument-bearing field gets a companion
+arguments model (for example `SubscriptionEventsArguments`) that preserves argument
+nullability, defaults, and references to enums and nested input types.
+
+The Query and Mutation roots remain skipped even with this scope enabled, so a
+subscription field that references them, a reference that cycles back to the
+subscription root, or the same object serving as multiple operation roots fails the
+generation with a field path in the error message and without writing partial output.
 
 ## Limitations
 

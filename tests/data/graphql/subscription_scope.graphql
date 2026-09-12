@@ -1,0 +1,47 @@
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+interface Node {
+  id: ID!
+}
+
+enum EventKind {
+  CREATED
+  UPDATED
+  ARCHIVED
+}
+
+union Event = Story | Alert
+
+type Story implements Node {
+  id: ID!
+  title: String!
+}
+
+type Alert implements Node {
+  id: ID!
+  level: Int
+}
+
+input EventFilter {
+  kinds: [EventKind!]
+  keyword: String
+}
+
+type Query {
+  ping: String
+}
+
+type Mutation {
+  markRead(id: ID!): Boolean
+}
+
+type Subscription implements Node {
+  id: ID!
+  events(kind: EventKind!, filter: EventFilter, limit: Int = 20): [Event!]!
+  alerts: [Alert!]
+  story(id: ID!): Story
+}

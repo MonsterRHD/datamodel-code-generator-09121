@@ -558,7 +558,7 @@ The schema type, format, and default Pydantic v2 type columns below are generate
 | Feature | Spec | Status | Notes |
 |---------|------|--------|-------|
 | Directives | Core | ❌ Not supported | Custom directives ignored |
-| Subscriptions | Core | ❌ Not supported | Only Query/Mutation types |
+| Subscriptions | Core | ⚠️ Partial | Subscription root omitted by default; enable with `--graphql-scopes subscription` |
 | Custom scalars | Core | ⚠️ Partial | Mapped to `Any` by default |
 | Interfaces inheritance | Core | ⚠️ Partial | Flattened to concrete types |
 | Federation directives | Apollo | ❌ Not supported | Apollo Federation not supported |

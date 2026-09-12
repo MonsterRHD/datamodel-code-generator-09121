@@ -77,7 +77,7 @@ FieldTypeCollisionStrategy: TypeAlias = Literal['rename-field', 'rename-type']
 Formatter: TypeAlias = Literal['builtin', 'black', 'isort', 'ruff-check', 'ruff-format']
 
 
-GraphQLScope: TypeAlias = Literal['schema']
+GraphQLScope: TypeAlias = Literal['schema', 'subscription']
 
 
 HTTPBackend: TypeAlias = Literal['auto', 'httpx', 'httpx2']

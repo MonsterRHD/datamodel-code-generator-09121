@@ -183,6 +183,7 @@
 
 ### GraphQL-only Options
 - `--graphql-no-typename`: Exclude __typename field from generated GraphQL models.
+- `--graphql-scopes`
 
 ### General Options
 - `--all-exports-collision-strategy`: Handle name collisions when exporting recursive module hierarchies.

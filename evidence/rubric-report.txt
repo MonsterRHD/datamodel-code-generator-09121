@@ -1,0 +1,8 @@
+项目：GraphQL Subscription 范围生成｜基线：586b8c8b7eb2c2c2c7a3d39fc16fd016fcc306b3｜Session rounds：284
+验证摘要：Subscription 定向测试 12 项全部失败；普通 GraphQL parser 回归 19 项通过。失败首因是 graphql.py:683 调用 _unwrap_named_type 时传入 self，函数定义为 @staticmethod，仅接收 type_，实际抛出 TypeError。
+Rubric ID：1｜状态：不通过｜期望行为：启用 Subscription 范围后订阅根字段、参数、包装层生成可导入模型。｜实际观察：启用 --graphql-scopes subscription 在解析第一个字段时抛出 TypeError，未生成模型。｜直接证据：src/datamodel_code_generator/parser/graphql.py:557-564、683；pytest -k subscription：9 failed。｜原因：静态方法被实例方式调用，参数数量错误。｜影响：Subscription 核心生成路径在任何字段上均中止。｜证据位置：tests/parser/test_graphql.py subscription 用例失败堆栈。
+Rubric ID：2｜状态：不通过｜期望行为：订阅字段引用的接口、联合、枚举和嵌套输入对象按现有规则生成。｜实际观察：类型解析尚未进入引用生成阶段即抛出 TypeError。｜直接证据：graphql.py:683-687。｜原因：订阅根预验证在类型引用解析前崩溃。｜影响：所有引用类型验证和模型生成均不可达。｜证据位置：/tmp/p2b.out TypeError traceback。
+Rubric ID：3｜状态：不通过｜期望行为：多个订阅字段和多层列表均被保留。｜实际观察：首个订阅字段处理失败，后续字段未执行。｜直接证据：graphql.py:681-684 的 for field_name 循环在首项退出。｜原因：循环体首个 _unwrap_named_type 调用抛出 TypeError。｜影响：多字段与包装层结果为空。｜证据位置：tests/main/graphql/test_main_graphql.py::test_main_graphql_subscription_scope。
+Rubric ID：4｜状态：不通过｜期望行为：循环、未知返回类型或根冲突时报字段路径、清理半成品并可重试。｜实际观察：所有错误场景先收到 TypeError，而非 SchemaParseError；错误路径验证未执行。｜直接证据：graphql.py:646-698；12 个 Subscription 定向测试失败。｜原因：预验证函数在引用检查前发生参数错误。｜影响：要求的诊断信息和可重试失败闭环未建立。｜证据位置：tests/parser/test_graphql.py subscription_scope_errors。
+Rubric ID：5｜状态：通过｜期望行为：未启用 Subscription 时保持跳过根类型及 Query/Mutation/普通模型兼容。｜实际观察：非 subscription parser 回归 19/19 通过；_resolve_types 在 graphql.py:139-144 默认把 subscription root 加入跳过集合。｜直接证据：pytest tests/parser/test_graphql.py -k 'not subscription'；graphql.py:139-144。
+Rubric ID：6｜状态：通过｜期望行为：无 Subscription 根的 schema 保持原有生成和导入行为。｜实际观察：既有 GraphQL parser 用例 19/19 通过。｜直接证据：pytest tests/parser/test_graphql.py -k 'not subscription' 输出 19 passed。

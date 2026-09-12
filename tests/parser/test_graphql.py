@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from datamodel_code_generator import InputFileType, generate
+from datamodel_code_generator import InputFileType, SchemaParseError, generate
 from datamodel_code_generator.config import GenerateConfig, GraphQLParserConfig
+from datamodel_code_generator.enums import GraphQLScope
 from datamodel_code_generator.model.dataclass import DataClass
 from datamodel_code_generator.parser.graphql import GraphQLParser
 from datamodel_code_generator.reference import Reference
@@ -248,3 +249,146 @@ def test_graphql_schema_features() -> None:
             dynamic_ref=True,
         )
     )
+
+
+SUBSCRIPTION_SCOPE_SCHEMA = """
+interface Node { id: ID! }
+enum EventKind { CREATED UPDATED }
+union Event = Story | Alert
+type Story implements Node { id: ID! title: String! }
+type Alert implements Node { id: ID! level: Int }
+input EventFilter { kinds: [EventKind!] keyword: String }
+type Query { ping: String }
+type Mutation { noop: Boolean }
+type Subscription implements Node {
+  id: ID!
+  events(kind: EventKind!, filter: EventFilter, limit: Int = 20): [Event!]!
+  alerts: [Alert!]
+}
+"""
+
+
+def test_graphql_subscription_scope_emits_root_and_arguments() -> None:
+    """Subscription scope keeps the root, arguments models, and wrapper layers."""
+    parser = GraphQLParser(
+        source=SUBSCRIPTION_SCOPE_SCHEMA,
+        graphql_scopes=[GraphQLScope.Subscription],
+    )
+    output = parser.parse()
+
+    assert "class Subscription(Node):" in output
+    assert "events: List[Event]" in output
+    assert "alerts: Optional[List[Alert]]" in output
+    assert "id: ID" in output
+    assert "class SubscriptionEventsArguments(BaseModel):" in output
+    assert "kind: EventKind" in output
+    assert "filter: Optional[EventFilter]" in output
+    assert "limit: Optional[Int] = 20" in output
+    assert "class Query" not in output
+    assert "class Mutation" not in output
+
+
+def test_graphql_subscription_scope_config_object() -> None:
+    """Subscription scope can be enabled through GraphQLParserConfig."""
+    parser = GraphQLParser(
+        source=SUBSCRIPTION_SCOPE_SCHEMA,
+        config=GraphQLParserConfig(graphql_scopes=[GraphQLScope.Subscription]),
+    )
+    assert parser.graphql_scopes == [GraphQLScope.Subscription]
+    assert "class Subscription(Node):" in parser.parse()
+
+
+def test_graphql_subscription_root_skipped_without_scope() -> None:
+    """Default and explicit schema scope keep omitting the Subscription root."""
+    for scopes in (None, [GraphQLScope.Schema]):
+        parser = GraphQLParser(source=SUBSCRIPTION_SCOPE_SCHEMA, graphql_scopes=scopes)
+        output = parser.parse()
+        assert "class Subscription(" not in output
+        assert "SubscriptionEventsArguments" not in output
+        assert "class Story(Node):" in output
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected_path"),
+    [
+        pytest.param(
+            "type Query { x: String }\ntype Subscription { self: Subscription }\n",
+            "Subscription/self/Subscription",
+            id="direct-cycle",
+        ),
+        pytest.param(
+            "type Query { x: String }\ntype Event { sub: Subscription }\n"
+            "type Subscription { events: Event }\n",
+            "Subscription/events/Event/sub/Subscription",
+            id="nested-cycle",
+        ),
+        pytest.param(
+            "type Query { x: String }\ntype Other { x: String }\n"
+            "union Choice = Subscription | Other\ntype Subscription { choice: Choice }\n",
+            "Subscription/choice/Choice/Subscription",
+            id="union-cycle",
+        ),
+        pytest.param(
+            "type Query { x: String }\ntype Subscription { q: Query }\n",
+            "Subscription/q",
+            id="unknown-return-type",
+        ),
+        pytest.param(
+            "schema { query: Root subscription: Root }\ntype Root { a: String }\n",
+            "schema/subscription/Root",
+            id="multiple-roots",
+        ),
+    ],
+)
+def test_graphql_subscription_scope_errors(schema: str, expected_path: str) -> None:
+    """Subscription scope violations raise field-path errors before models are written."""
+    parser = GraphQLParser(source=schema, graphql_scopes=[GraphQLScope.Subscription])
+    with pytest.raises(SchemaParseError) as exc_info:
+        parser.parse()
+    assert expected_path in str(exc_info.value)
+
+
+def test_graphql_subscription_scope_allows_ordinary_recursive_types() -> None:
+    """Cycles that do not re-enter the subscription root remain valid."""
+    parser = GraphQLParser(
+        source=(
+            "type Query { x: String }\n"
+            "type Comment { reply: Comment text: String }\n"
+            "type Subscription { comment: Comment }\n"
+        ),
+        graphql_scopes=[GraphQLScope.Subscription],
+    )
+    output = parser.parse()
+    assert "class Comment(BaseModel):" in output
+    assert "class Subscription(BaseModel):" in output
+
+
+def test_graphql_subscription_arguments_model_name_clash_disambiguated() -> None:
+    """Arguments models avoid overwriting an ordinary type with the same name."""
+    parser = GraphQLParser(
+        source=(
+            "type Query { x: String }\n"
+            "type Event { id: ID! }\n"
+            "type SubscriptionEventsArguments { note: String }\n"
+            "type Subscription { events(topic: String!): [Event!]! }\n"
+        ),
+        graphql_scopes=[GraphQLScope.Subscription],
+    )
+    output = parser.parse()
+    assert "class SubscriptionEventsArguments(BaseModel):" in output
+    assert "class SubscriptionEventsArguments1(BaseModel):" in output
+    assert parser.subscription_argument_models == {"SubscriptionEventsArguments1": "events"}
+
+
+def test_graphql_subscription_scope_generate_api(output_file: Path) -> None:
+    """generate() forwards graphql_scopes to the GraphQL parser."""
+    config = GenerateConfig(
+        input_file_type=InputFileType.GraphQL,
+        output=output_file,
+        graphql_scopes=[GraphQLScope.Subscription],
+        disable_timestamp=True,
+    )
+    generate(SUBSCRIPTION_SCOPE_SCHEMA, config=config)
+    content = output_file.read_text(encoding="utf-8")
+    assert "class Subscription(Node):" in content
+    assert "class SubscriptionEventsArguments(" in content

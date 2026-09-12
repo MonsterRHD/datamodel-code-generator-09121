@@ -226,6 +226,7 @@ class GraphQLScope(Enum):
     """Scopes for GraphQL model generation."""
 
     Schema = "schema"
+    Subscription = "subscription"
 
 
 class ReadOnlyWriteOnlyModelType(Enum):

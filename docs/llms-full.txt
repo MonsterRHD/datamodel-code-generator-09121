@@ -3298,7 +3298,7 @@ The schema type, format, and default Pydantic v2 type columns below are generate
 | Feature | Spec | Status | Notes |
 |---------|------|--------|-------|
 | Directives | Core | ❌ Not supported | Custom directives ignored |
-| Subscriptions | Core | ❌ Not supported | Only Query/Mutation types |
+| Subscriptions | Core | ⚠️ Partial | Subscription root omitted by default; enable with `--graphql-scopes subscription` |
 | Custom scalars | Core | ⚠️ Partial | Mapped to `Any` by default |
 | Interfaces inheritance | Core | ⚠️ Partial | Flattened to concrete types |
 | Federation directives | Apollo | ❌ Not supported | Apollo Federation not supported |
@@ -5409,6 +5409,21 @@ class Book(BaseModel):
 | Scalars | Built-in scalars map to Python aliases; custom scalars can be configured |
 | Lists and non-null markers | Converted into Python collection and optionality annotations |
 | `__typename` | Included by default and removable with `--graphql-no-typename` |
+| Query/Mutation roots | Skipped by default; references to them become `Any` |
+| Subscription root | Skipped by default; emitted with `--graphql-scopes subscription` |
+
+### Subscription root generation
+
+Operation root types are omitted by default. Pass `--graphql-scopes subscription` to also
+emit the `Subscription` root as an importable model: subscription fields keep their
+non-null and list wrapper layers, and each argument-bearing field gets a companion
+arguments model (for example `SubscriptionEventsArguments`) that preserves argument
+nullability, defaults, and references to enums and nested input types.
+
+The Query and Mutation roots remain skipped even with this scope enabled, so a
+subscription field that references them, a reference that cycles back to the
+subscription root, or the same object serving as multiple operation roots fails the
+generation with a field path in the error message and without writing partial output.
 
 ## Limitations
 
@@ -10933,7 +10948,7 @@ This documentation is auto-generated from test cases.
 | 🏗️ [Model Customization](model-customization.md) | 44 | Model generation behavior |
 | 🎨 [Template Customization](template-customization.md) | 27 | Output formatting and custom rendering |
 | 📘 [OpenAPI-only Options](openapi-only-options.md) | 8 | OpenAPI-specific features |
-| 📋 [GraphQL-only Options](graphql-only-options.md) | 1 |  |
+| 📋 [GraphQL-only Options](graphql-only-options.md) | 2 |  |
 | ⚙️ [General Options](general-options.md) | 24 | Utilities and meta options |
 | 📝 [Utility Options](utility-options.md) | 15 | Help, version, debug options |
 
@@ -11075,6 +11090,7 @@ These links are generated from CLI option metadata and summarize options that im
 - [`--generate-pyproject-config`](general-options.md#generate-pyproject-config)
 - [`--generate-schema-validators`](template-customization.md#generate-schema-validators)
 - [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename)
+- [`--graphql-scopes`](graphql-only-options.md#graphql-scopes)
 
 ### H {#h}
 
@@ -36382,6 +36398,7 @@ Source: https://datamodel-code-generator.koxudaxi.dev/cli-reference/graphql-only
 | Option | Description |
 |--------|-------------|
 | [`--graphql-no-typename`](#graphql-no-typename) | Exclude __typename field from generated GraphQL models. |
+| [`--graphql-scopes`](#graphql-scopes) | Emit the GraphQL Subscription operation root with `--graphql... |
 
 ---
 
@@ -36472,6 +36489,175 @@ don't expect this field in input data.
 
     class BookInput(BaseModel):
         title: String
+    ```
+
+---
+
+## `--graphql-scopes` {#graphql-scopes}
+
+Emit the GraphQL Subscription operation root with `--graphql-scopes subscription`.
+
+By default, operation roots are skipped. Adding the `subscription` scope keeps the
+Subscription root itself, its field arguments (as importable arguments models), and
+the non-null/list wrapper layers while resolving referenced interfaces, unions,
+enums, and nested input types.
+
+!!! tip "Usage"
+
+    ```bash
+    datamodel-codegen --input schema.json --graphql-scopes subscription # (1)!
+    ```
+
+    1. :material-arrow-left: `--graphql-scopes` - the option documented here
+
+??? example "Examples"
+
+    **Input Schema:**
+
+    ```graphql
+    schema {
+      query: Query
+      mutation: Mutation
+      subscription: Subscription
+    }
+
+    interface Node {
+      id: ID!
+    }
+
+    enum EventKind {
+      CREATED
+      UPDATED
+      ARCHIVED
+    }
+
+    union Event = Story | Alert
+
+    type Story implements Node {
+      id: ID!
+      title: String!
+    }
+
+    type Alert implements Node {
+      id: ID!
+      level: Int
+    }
+
+    input EventFilter {
+      kinds: [EventKind!]
+      keyword: String
+    }
+
+    type Query {
+      ping: String
+    }
+
+    type Mutation {
+      markRead(id: ID!): Boolean
+    }
+
+    type Subscription implements Node {
+      id: ID!
+      events(kind: EventKind!, filter: EventFilter, limit: Int = 20): [Event!]!
+      alerts: [Alert!]
+      story(id: ID!): Story
+    }
+    ```
+
+    **Output:**
+
+    ```python
+    # generated by datamodel-codegen:
+    #   filename:  subscription_scope.graphql
+
+    from __future__ import annotations
+
+    from enum import Enum
+    from typing import Literal, Union
+
+    from pydantic import BaseModel, Field
+    from typing_extensions import TypeAliasType
+
+    Boolean = TypeAliasType("Boolean", bool)
+    """
+    The `Boolean` scalar type represents `true` or `false`.
+    """
+
+
+    ID = TypeAliasType("ID", str)
+    """
+    The `ID` scalar type represents a unique identifier, often used to refetch an object or as key for a cache. The ID type appears in a JSON response as a String; however, it is not intended to be human-readable. When expected as an input type, any string (such as `"4"`) or integer (such as `4`) input value will be accepted as an ID.
+    """
+
+
+    Int = TypeAliasType("Int", int)
+    """
+    The `Int` scalar type represents non-fractional signed whole numeric values. Int can represent values between -(2^31) and 2^31 - 1.
+    """
+
+
+    String = TypeAliasType("String", str)
+    """
+    The `String` scalar type represents textual data, represented as UTF-8 character sequences. The String type is most often used by GraphQL to represent free-form human-readable text.
+    """
+
+
+    class EventKind(Enum):
+        ARCHIVED = 'ARCHIVED'
+        CREATED = 'CREATED'
+        UPDATED = 'UPDATED'
+
+
+    class Node(BaseModel):
+        id: ID
+        typename__: Literal['Node'] | None = Field('Node', alias='__typename')
+
+
+    class Alert(Node):
+        id: ID
+        level: Int | None = None
+        typename__: Literal['Alert'] | None = Field('Alert', alias='__typename')
+
+
+    class Story(Node):
+        id: ID
+        title: String
+        typename__: Literal['Story'] | None = Field('Story', alias='__typename')
+
+
+    class SubscriptionStoryArguments(BaseModel):
+        id: ID
+
+
+    class EventFilter(BaseModel):
+        keyword: String | None = None
+        kinds: list[EventKind] | None = None
+        typename__: Literal['EventFilter'] | None = Field('EventFilter', alias='__typename')
+
+
+    Event = TypeAliasType(
+        "Event",
+        Union[
+            'Alert',
+            'Story',
+        ],
+    )
+
+
+    class Subscription(Node):
+        alerts: list[Alert] | None = None
+        events: list[Event]
+        id: ID
+        story: Story | None = None
+        typename__: Literal['Subscription'] | None = Field(
+            'Subscription', alias='__typename'
+        )
+
+
+    class SubscriptionEventsArguments(BaseModel):
+        filter: EventFilter | None = None
+        kind: EventKind
+        limit: Int | None = 20
     ```
 
 ---
@@ -40189,6 +40375,7 @@ datamodel-codegen [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename) | Exclude __typename field from generated GraphQL models. |
+| [`--graphql-scopes`](graphql-only-options.md#graphql-scopes) | Emit the GraphQL Subscription operation root with `--graphql-scopes subscription... |
 
 ### ⚙️ General Options
 
@@ -40312,6 +40499,7 @@ All options sorted alphabetically:
 - [`--generate-pyproject-config`](general-options.md#generate-pyproject-config) - Generate pyproject.toml configuration from CLI arguments.
 - [`--generate-schema-validators`](template-customization.md#generate-schema-validators) - Generate experimental Pydantic v2 model validators for JSON ...
 - [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename) - Exclude __typename field from generated GraphQL models.
+- [`--graphql-scopes`](graphql-only-options.md#graphql-scopes) - Emit the GraphQL Subscription operation root with `--graphql...
 - [`--help`](utility-options.md#help) - Show help message and exit
 - [`--http-backend`](base-options.md#http-backend) - Select the HTTP client backend for remote schemas.
 - [`--http-headers`](general-options.md#http-headers) - Fetch a schema from a URL with custom HTTP headers.
