@@ -62,6 +62,7 @@ _TYPING_IMPORT_NAMES: frozenset[str] = frozenset({
     IMPORT_UNION.import_,
 })
 _ADDITIONAL_PROPERTIES_REFERENCE_CLASSES_TEMPLATE_DATA_KEY = "additionalPropertiesReferenceClasses"
+_RUNTIME_VALIDATION_REFERENCE_CLASSES_TEMPLATE_DATA_KEY = "runtimeValidationReferenceClasses"
 _ADDITIONAL_PROPERTIES_TEMPLATE_DATA_KEY = "additionalProperties"
 _ADDITIONAL_PROPERTIES_TYPE_TEMPLATE_DATA_KEY = "additionalPropertiesType"
 _USE_TYPED_DICT_BACKPORT_TEMPLATE_DATA_KEY = "use_typeddict_backport"
@@ -2035,6 +2036,11 @@ class DataModel(TemplateBase, Nullable, ABC):  # noqa: PLR0904
         """Return dependencies contributed by model-owned additional properties."""
         return self._additional_properties_reference_classes
 
+    @property
+    def runtime_validation_reference_classes(self) -> Collection[str]:
+        """Return dependencies contributed by schema runtime-validation rules."""
+        return self.extra_template_data.get(_RUNTIME_VALIDATION_REFERENCE_CLASSES_TEMPLATE_DATA_KEY, ())
+
     def __init__(  # noqa: PLR0913
         self,
         *,
@@ -2331,6 +2337,7 @@ class DataModel(TemplateBase, Nullable, ABC):  # noqa: PLR0904
         return frozenset(
             {r.reference.path for r in self.base_classes if r.reference}
             | {t for f in self.fields for t in f.unresolved_types}
+            | set(self.runtime_validation_reference_classes)
         )
 
     @property

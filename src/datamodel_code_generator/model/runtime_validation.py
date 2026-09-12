@@ -56,6 +56,19 @@ class PatternPropertiesRule:
 
 
 @dataclass(frozen=True)
+class NotRule:
+    """Runtime rule for a JSON Schema ``not`` branch.
+
+    ``branch`` is the compiled type that validated values must not match.
+    ``root_value`` selects the parsed value checked by the rule: the
+    ``root`` attribute for root models, or the model instance itself.
+    """
+
+    branch: DataType
+    root_value: bool = False
+
+
+@dataclass(frozen=True)
 class RequiredGroupsRule:
     """Runtime rule for required-property oneOf/anyOf groups."""
 
@@ -121,6 +134,7 @@ class SchemaRuntimeValidation:
     conditional_required: list[ConditionalRequiredRule] = field(default_factory=list)
     property_count: PropertyCountRule | None = None
     unique_items: list[UniqueItemsRule] = field(default_factory=list)
+    not_rules: list[NotRule] = field(default_factory=list)
     replace_unique_items: bool = False
 
     def __bool__(self) -> bool:
@@ -131,13 +145,18 @@ class SchemaRuntimeValidation:
             or self.conditional_required
             or self.property_count
             or self.unique_items
+            or self.not_rules
             or self.replace_unique_items
         )
 
     @property
     def data_types(self) -> tuple[DataType, ...]:
         """Return all generated data types referenced by runtime rules."""
-        return tuple(data_type for rule in self.pattern_properties for data_type in rule.data_types)
+        not_data_types = tuple(rule.branch for rule in self.not_rules)
+        return (
+            *(data_type for rule in self.pattern_properties for data_type in rule.data_types),
+            *not_data_types,
+        )
 
 
 class _InternalSchemaRuntimeValidation(SchemaRuntimeValidation):
@@ -154,6 +173,7 @@ class _InternalSchemaRuntimeValidation(SchemaRuntimeValidation):
         conditional_required: list[ConditionalRequiredRule] | None = None,
         property_count: PropertyCountRule | None = None,
         unique_items: list[UniqueItemsRule] | None = None,
+        not_rules: list[NotRule] | None = None,
     ) -> None:
         if token is not _INTERNAL_SCHEMA_RUNTIME_VALIDATION_TOKEN:
             raise TypeError(_INTERNAL_SCHEMA_RUNTIME_VALIDATION_ERROR)
@@ -163,16 +183,18 @@ class _InternalSchemaRuntimeValidation(SchemaRuntimeValidation):
             conditional_required=[] if conditional_required is None else conditional_required,
             property_count=property_count,
             unique_items=[] if unique_items is None else unique_items,
+            not_rules=[] if not_rules is None else not_rules,
         )
 
 
-def _make_internal_schema_runtime_validation(
+def _make_internal_schema_runtime_validation(  # noqa: PLR0913
     *,
     pattern_properties: list[PatternPropertiesRule] | None = None,
     required_groups: list[RequiredGroupsRule] | None = None,
     conditional_required: list[ConditionalRequiredRule] | None = None,
     property_count: PropertyCountRule | None = None,
     unique_items: list[UniqueItemsRule] | None = None,
+    not_rules: list[NotRule] | None = None,
 ) -> SchemaRuntimeValidation:
     """Create parser-owned runtime validation metadata for built-in rendering."""
     return _InternalSchemaRuntimeValidation(
@@ -182,6 +204,7 @@ def _make_internal_schema_runtime_validation(
         conditional_required=conditional_required,
         property_count=property_count,
         unique_items=unique_items,
+        not_rules=not_rules,
     )
 
 

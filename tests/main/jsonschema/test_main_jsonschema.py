@@ -16521,6 +16521,204 @@ def test_main_jsonschema_generate_schema_validators(output_file: Path) -> None:
     )
 
 
+def test_main_jsonschema_generate_schema_validators_not(output_file: Path) -> None:
+    """Compile ``not`` branches into deterministic after-validation rejection."""
+    run_main_and_assert(
+        input_path=JSON_SCHEMA_DATA_PATH / "schema_validators_not.json",
+        output_path=output_file,
+        input_file_type="jsonschema",
+        assert_func=assert_file_content,
+        expected_file="schema_validators_not.py",
+        extra_args=[
+            "--generate-schema-validators",
+            "--output-model-type",
+            "pydantic_v2.BaseModel",
+            "--use-annotated",
+            "--disable-timestamp",
+        ],
+        force_exec_validation=True,
+    )
+    valid_base = '{"directObject": {"status": "ok"}, "scalarField": "hello"}'
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json=valid_base,
+        invalid_json='{"directObject": {"status": "banned"}, "scalarField": "hello"}',
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json='{"directObject": {"status": "ok"}, "scalarField": "public"}',
+        invalid_json='{"directObject": {"status": "ok"}, "scalarField": "secret-value"}',
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "itemsField": [{"status": "ok"}]}',
+        invalid_json=('{"directObject": {"status": "ok"}, "scalarField": "x", "itemsField": [{"status": "banned"}]}'),
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "compositionField": 3}',
+        invalid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "compositionField": 100}',
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "compositionField": "5"}',
+        invalid_json=('{"directObject": {"status": "ok"}, "scalarField": "x", "compositionField": "forbidden"}'),
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "userName": "bob"}',
+        invalid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "userName": "admin"}',
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "presenceField": {}}',
+        invalid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "presenceField": {"a": 1}}',
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        valid_json=(
+            '{"directObject": {"status": "ok"}, "scalarField": "x", '
+            '"recursiveField": {"directObject": {"status": "ok"}, "scalarField": "y"}}'
+        ),
+        invalid_json=(
+            '{"directObject": {"status": "ok"}, "scalarField": "x", '
+            '"recursiveField": {"directObject": {"status": "ok"}, "scalarField": "y", "neverField": true}}'
+        ),
+        expected_error_type="value_error",
+    )
+    assert_generated_model_json_invalid(
+        output_file,
+        module_name="output",
+        model_name="NotRoot",
+        invalid_json='{"directObject": {"status": "ok"}, "scalarField": "x", "neverField": 1}',
+        expected_error_type="value_error",
+    )
+
+    with _generated_model(output_file, "output", "NotRoot") as model:
+        validate_json = _model_json_validator(model)
+        # Several independent values must remain accepted.
+        validate_json(valid_base)
+        validate_json('{"directObject": {"status": "ok"}, "scalarField": "x", "notFalseField": "anything"}')
+        # Several matching not branches are reported in one stable error.
+        with pytest.raises(ValidationError) as exc_info:
+            validate_json('{"directObject": {"status": "ok"}, "scalarField": "x", "presenceField": {"a": 1, "b": 2}}')
+        message = str(exc_info.value)
+        assert "'not' branch: 0, 1" in message
+
+
+def test_main_jsonschema_generate_schema_validators_not_disabled(output_file: Path) -> None:
+    """``not`` stays ignored when schema validators are disabled."""
+    run_main_with_args([
+        "--input",
+        str(JSON_SCHEMA_DATA_PATH / "schema_validators_not.json"),
+        "--output",
+        str(output_file),
+        "--input-file-type",
+        "jsonschema",
+        "--output-model-type",
+        "pydantic_v2.BaseModel",
+        "--use-annotated",
+        "--disable-timestamp",
+    ])
+    source = output_file.read_text(encoding="utf-8")
+    assert "__json_schema_not_rules__" not in source
+    assert "_JsonSchemaRuntimeValidationBase" not in source
+    with _generated_model(output_file, "output", "NotRoot") as model:
+        validate_json = _model_json_validator(model)
+        parsed = validate_json('{"directObject": {"status": "banned"}, "scalarField": "secret-value"}')
+        assert parsed.directObject.status == "banned"
+        assert parsed.scalarField == "secret-value"
+
+
+def test_main_jsonschema_generate_schema_validators_not_external_reference(tmp_path: Path, output_file: Path) -> None:
+    """``not`` branches can reference objects defined in an external file."""
+    main_schema = tmp_path / "schema_validators_not_external.json"
+    defs_schema = tmp_path / "schema_validators_not_external_defs.json"
+    shutil.copy(JSON_SCHEMA_DATA_PATH / main_schema.name, main_schema)
+    shutil.copy(JSON_SCHEMA_DATA_PATH / defs_schema.name, defs_schema)
+    generate(
+        input_=main_schema,
+        output=output_file,
+        input_file_type=InputFileType.JsonSchema,
+        output_model_type=DataModelType.PydanticV2BaseModel,
+        generate_schema_validators=True,
+        disable_timestamp=True,
+    )
+    assert_generated_model_json_validation(
+        output_file,
+        module_name="output",
+        model_name="ExternalNotRoot",
+        valid_json='{"externalObject": {"status": "ok"}}',
+        invalid_json='{"externalObject": {"status": "external-banned"}}',
+        expected_error_type="value_error",
+    )
+
+
+def test_main_jsonschema_generate_schema_validators_not_missing_reference(tmp_path: Path) -> None:
+    """A missing external ``not`` branch fails generation without publishing output."""
+    main_schema = tmp_path / "schema_validators_not_external.json"
+    shutil.copy(JSON_SCHEMA_DATA_PATH / main_schema.name, main_schema)
+    output_file = tmp_path / "output.py"
+    with pytest.raises(Error) as exc_info:
+        generate(
+            input_=main_schema,
+            output=output_file,
+            input_file_type=InputFileType.JsonSchema,
+            output_model_type=DataModelType.PydanticV2BaseModel,
+            generate_schema_validators=True,
+            disable_timestamp=True,
+        )
+    assert "$ref" in str(exc_info.value)
+    assert not output_file.exists()
+
+
+def test_main_jsonschema_generate_schema_validators_not_unsupported_keyword(
+    tmp_path: Path,
+) -> None:
+    """A ``not`` branch using unsupported keywords fails generation explicitly."""
+    schema = {
+        "type": "array",
+        "items": {"type": "integer"},
+        "not": {"contains": {"const": 7}},
+    }
+    input_file = tmp_path / "schema.json"
+    input_file.write_text(json.dumps(schema))
+    output_file = tmp_path / "output.py"
+    with pytest.raises(Error, match="'not' branch.*contains"):
+        generate(
+            input_=input_file,
+            output=output_file,
+            input_file_type=InputFileType.JsonSchema,
+            output_model_type=DataModelType.PydanticV2BaseModel,
+            generate_schema_validators=True,
+            disable_timestamp=True,
+        )
+    assert not output_file.exists()
+
+
 def test_main_jsonschema_unique_items_schema_validators(output_file: Path) -> None:
     """Validate uniqueItems arrays without coercing their list values to sets."""
     run_main_and_assert(

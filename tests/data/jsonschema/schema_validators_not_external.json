@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "title": "ExternalNotRoot",
+  "properties": {
+    "externalObject": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": ["status"],
+      "not": {
+        "$ref": "./schema_validators_not_external_defs.json#/$defs/ExternalForbidden"
+      }
+    }
+  },
+  "required": ["externalObject"]
+}

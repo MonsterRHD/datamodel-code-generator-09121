@@ -18,7 +18,7 @@ from itertools import chain, starmap
 from math import gcd, lcm
 from pathlib import Path
 from string import digits
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, Optional, Union, cast
 from urllib.parse import ParseResult, unquote, urljoin, urlparse
 from warnings import warn
 
@@ -59,7 +59,13 @@ from datamodel_code_generator.deprecations import warn_deprecated
 from datamodel_code_generator.enums import AliasGenerator
 from datamodel_code_generator.imports import IMPORT_ANY, Import
 from datamodel_code_generator.model import DataModel, DataModelFieldBase
-from datamodel_code_generator.model.base import UNDEFINED, c3_merge, get_inherited_fields, sanitize_module_name
+from datamodel_code_generator.model.base import (
+    _RUNTIME_VALIDATION_REFERENCE_CLASSES_TEMPLATE_DATA_KEY,
+    UNDEFINED,
+    c3_merge,
+    get_inherited_fields,
+    sanitize_module_name,
+)
 from datamodel_code_generator.model.enum import (
     NULL_ENUM_MEMBER_VALUE,
     SPECIALIZED_ENUM_TYPE_MATCH,
@@ -75,6 +81,7 @@ from datamodel_code_generator.model.runtime_validation import (
     UNIQUE_ITEMS_MAPPING_PATTERN_VALUES_PATH_STEP,
     UNIQUE_ITEMS_MAPPING_VALUES_PATH_STEP,
     ConditionalRequiredRule,
+    NotRule,
     PatternPropertiesRule,
     PropertyCountRule,
     RequiredGroupsRule,
@@ -495,6 +502,7 @@ _SCHEMA_OBJECT_CHILD_FIELDS = frozenset({
     "properties",
 })
 _CONDITIONAL_SCHEMA_KEYWORDS = frozenset({"if", "then", "else"})
+_NOT_SCHEMA_KEYWORD: Final = "not"
 
 
 def _get_data_type_constraint_kwargs(
@@ -1372,7 +1380,7 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
 
     _config_class_name: ClassVar[str] = "JSONSchemaParserConfig"
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         source: str | Path | list[Path] | ParseResult,
         *,
@@ -1440,6 +1448,7 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
         self._local_ref_path_cache: dict[Path, Path] = {}
         if self.generate_schema_validators:
             self._property_count_rule_cache: dict[int, tuple[JsonSchemaObject, PropertyCountRule | None]] = {}
+            self._not_rule_presence_cache: dict[int, tuple[JsonSchemaObject, bool]] = {}
         self.field_keys: set[str] = {
             *DEFAULT_FIELD_KEYS,
             *self.field_extra_keys,
@@ -2265,6 +2274,7 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
         self._inherited_parent_property_cache.clear()
         if self.generate_schema_validators:
             self._property_count_rule_cache.clear()
+            self._not_rule_presence_cache.clear()
 
     def _merge_inherited_field_overrides(
         self,
@@ -2887,12 +2897,20 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             if all(available_names.intersection(input_names) for input_names, _ in rule.condition)
         ]
 
+        not_rules = []
+        for rule in source.not_rules:
+            copied_not_branch = _copy_data_type(rule.branch)
+            self._update_data_type_ref_for_variant(copied_not_branch, suffix)
+            not_rules.append(NotRule(branch=copied_not_branch, root_value=rule.root_value))
+            self._record_runtime_validation_reference_classes(target_path, copied_not_branch)
+
         target = _make_internal_schema_runtime_validation(
             pattern_properties=pattern_properties,
             required_groups=required_groups,
             conditional_required=conditional_required,
             property_count=source.property_count,
             unique_items=[],
+            not_rules=not_rules,
         )
         if target:
             self.extra_template_data[target_path]["schema_runtime_validation"] = target
@@ -6896,6 +6914,342 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             if isinstance(branch, JsonSchemaObject):
                 yield branch
 
+    def _get_not_schema(self, obj: JsonSchemaObject) -> JsonSchemaObject | bool | None:
+        """Return the normalized ``not`` branch, including boolean schemas."""
+        item = obj.extras.get(_NOT_SCHEMA_KEYWORD)
+        if isinstance(item, (JsonSchemaObject, bool)):
+            return item
+        if isinstance(item, dict):
+            item = self.SCHEMA_OBJECT_TYPE.model_validate(item)
+            obj.extras[_NOT_SCHEMA_KEYWORD] = item
+            return item
+        return None
+
+    def _has_not_validator(self, obj: JsonSchemaObject) -> bool:
+        """Return whether this schema or an allOf source carries an effective ``not``."""
+        if not self.generate_schema_validators or not self.data_model_type.SUPPORTS_SCHEMA_RUNTIME_VALIDATION:
+            return False
+        cache = self._not_rule_presence_cache
+        cache_key = id(obj)
+        if (cached := cache.get(cache_key)) is not None and cached[0] is obj:
+            return cached[1]
+        result = False
+        for source in self._iter_schema_validation_sources(obj):
+            branch = self._get_not_schema(source)
+            if branch is not None and branch is not False:
+                result = True
+                break
+        cache[cache_key] = obj, result
+        return result
+
+    _NOT_BRANCH_UNSUPPORTED_KEYWORDS = (
+        "contains",
+        "minContains",
+        "maxContains",
+        "dependentRequired",
+        "dependentSchemas",
+    )
+
+    def _not_branch_child_schemas(  # noqa: PLR0912
+        self, value: JsonSchemaObject
+    ) -> Iterator[JsonSchemaObject | bool]:
+        """Yield the subschemas of a branch that can carry unsupported keywords."""
+        if value.properties:
+            yield from value.properties.values()
+        yield from value.allOf
+        yield from value.oneOf
+        yield from value.anyOf
+        if value.prefixItems:
+            yield from value.prefixItems
+        if value.patternProperties:
+            yield from value.patternProperties.values()
+        if isinstance(value.items, JsonSchemaObject):
+            yield value.items
+        elif isinstance(value.items, list):
+            for item in value.items:
+                if isinstance(item, JsonSchemaObject):
+                    yield item
+        for attr in ("additionalProperties", "unevaluatedProperties", "propertyNames"):
+            child = getattr(value, attr)
+            if isinstance(child, JsonSchemaObject):
+                yield child
+        not_schema = self._get_not_schema(value)
+        if isinstance(not_schema, JsonSchemaObject):
+            yield not_schema
+        for keyword in ("if", "then", "else"):
+            child = value.extras.get(keyword)
+            if isinstance(child, dict):
+                yield self.SCHEMA_OBJECT_TYPE.model_validate(child)
+            elif isinstance(child, JsonSchemaObject):
+                yield child
+
+    def _not_branch_unsupported_keyword(self, value: Any) -> str | None:
+        """Return a keyword the generator cannot represent in a ``not`` branch."""
+        if isinstance(value, bool) or not isinstance(value, JsonSchemaObject):
+            return None
+        keyword = next(
+            (keyword for keyword in self._NOT_BRANCH_UNSUPPORTED_KEYWORDS if keyword in value.extras),
+            None,
+        )
+        if keyword is not None:
+            return keyword
+        return next(
+            (
+                nested
+                for child in self._not_branch_child_schemas(value)
+                if (nested := self._not_branch_unsupported_keyword(child))
+            ),
+            None,
+        )
+
+    def _normalize_not_branch_raw(self, raw: Any) -> None:  # noqa: PLR0912
+        """Give anonymous object-shape branches an explicit object type.
+
+        A branch such as ``{"required": ["a"]}`` only constrains objects and
+        is vacuously false for non-objects, so adding ``type: object`` keeps
+        the JSON Schema meaning while making the generator build a model that
+        can distinguish the forbidden shape from ``Any``.
+        """
+        if not isinstance(raw, dict):
+            return
+        additional_properties = raw.get("additionalProperties")
+        has_object_shape = (
+            any(
+                key in raw
+                for key in (
+                    "properties",
+                    "patternProperties",
+                    "propertyNames",
+                    "required",
+                    "minProperties",
+                    "maxProperties",
+                )
+            )
+            or additional_properties is False
+            or isinstance(additional_properties, dict)
+        )
+        non_object_keywords = (
+            "$ref",
+            "$recursiveRef",
+            "$dynamicRef",
+            "oneOf",
+            "anyOf",
+            "allOf",
+            "items",
+            "enum",
+            "const",
+        )
+        if has_object_shape and raw.get("type") is None and not any(key in raw for key in non_object_keywords):
+            raw["type"] = "object"
+        # Required-only keys constrain key presence; synthesize permissive
+        # property entries so an executable model (not plain ``dict``/``Any``)
+        # is generated for the branch.
+        required = raw.get("required")
+        if isinstance(required, list) and required:
+            properties = raw.setdefault("properties", {})
+            if isinstance(properties, dict):
+                for key in required:
+                    if isinstance(key, str):
+                        properties.setdefault(key, {})
+        container_keys = (
+            "properties",
+            "patternProperties",
+            "definitions",
+            "$defs",
+            "dependentSchemas",
+        )
+        for key in container_keys:
+            value = raw.get(key)
+            if isinstance(value, dict):
+                for child in value.values():
+                    self._normalize_not_branch_raw(child)
+        for key in ("oneOf", "anyOf", "allOf", "prefixItems"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                for child in value:
+                    self._normalize_not_branch_raw(child)
+        for key in (
+            "items",
+            "additionalItems",
+            "unevaluatedItems",
+            "additionalProperties",
+            "unevaluatedProperties",
+            "propertyNames",
+            "contains",
+            "not",
+            "if",
+            "then",
+            "else",
+        ):
+            self._normalize_not_branch_raw(raw.get(key))
+
+    def _compile_not_branch(
+        self,
+        name: str,
+        branch: JsonSchemaObject | bool,  # noqa: FBT001
+        parent: JsonSchemaObject,
+        path: list[str],
+        source_index: int,
+    ) -> DataType:
+        """Compile one forbidden branch into a type usable by a runtime adapter."""
+        if branch is True:
+            return self.data_type_manager.get_data_type(Types.any)
+        unsupported_keyword = self._not_branch_unsupported_keyword(branch)
+        if unsupported_keyword is not None:
+            msg = (
+                f"Cannot compile a 'not' branch using '{unsupported_keyword}': the constraint cannot be "
+                "represented in generated Pydantic models. Remove it from the branch or do not use "
+                "--generate-schema-validators."
+            )
+            raise Error(msg)
+        branch_path = get_special_path(f"schemaValidators/not/{source_index}", path)
+        branch_raw = branch.model_dump(exclude_unset=True, by_alias=True)
+        self._normalize_not_branch_raw(branch_raw)
+        normalized_branch = self.SCHEMA_OBJECT_TYPE.model_validate(branch_raw)
+        # Object-shape branches without declared properties (e.g. required-only
+        # presence constraints) need an executable object model rather than a
+        # plain ``dict``/``Any`` annotation that would match every value.
+        if (
+            normalized_branch.is_object  # noqa: PLR0916
+            and not normalized_branch.properties
+            and not normalized_branch.patternProperties
+            and (
+                normalized_branch.required
+                or normalized_branch.additionalProperties is False
+                or normalized_branch.propertyNames is not None
+                or normalized_branch.minProperties
+                or normalized_branch.maxProperties
+            )
+        ):
+            object_branch_path = get_special_path("object", branch_path)
+            with self._temporarily_enable_field_constraints():
+                return self.parse_object(
+                    f"{name}Not{source_index}Object",
+                    normalized_branch,
+                    object_branch_path,
+                )
+        # Scalar bounds must be part of the branch annotation even when field
+        # constraints are disabled globally, otherwise TypeAdapter could not
+        # distinguish the forbidden shape.
+        with self._temporarily_enable_field_constraints():
+            return self.parse_item(
+                f"{name}Not{source_index}",
+                normalized_branch,
+                branch_path,
+                parent=parent,
+            )
+
+    def _not_rule_key(self, data_type: DataType, *, root_value: bool) -> tuple[bool, str]:  # noqa: PLR6301
+        """Build a stable de-duplication key for one compiled not rule."""
+        reference = data_type.reference
+        return root_value, reference.path if reference is not None else data_type.type_hint
+
+    def _append_not_rule(  # noqa: PLR0913, PLR0917
+        self,
+        runtime_validation: SchemaRuntimeValidation,
+        reference_path: str,
+        name: str,
+        source: JsonSchemaObject,
+        parent: JsonSchemaObject,
+        path: list[str],
+        source_index: int,
+        *,
+        is_root_model: bool,
+    ) -> bool:
+        """Compile and register one ``not`` branch on a model's runtime validation."""
+        branch = self._get_not_schema(source)
+        if branch is None or branch is False:
+            return False
+        data_type = self._compile_not_branch(name, branch, parent, path, source_index)
+        rule_key = self._not_rule_key(data_type, root_value=is_root_model)
+        for rule in runtime_validation.not_rules:
+            if (
+                rule.root_value == is_root_model
+                and self._not_rule_key(rule.branch, root_value=is_root_model) == rule_key
+            ):
+                return False
+        runtime_validation.not_rules.append(NotRule(branch=data_type, root_value=is_root_model))
+        self._record_runtime_validation_reference_classes(reference_path, data_type)
+        return True
+
+    def _record_runtime_validation_reference_classes(
+        self,
+        reference_path: str,
+        data_type: DataType,
+    ) -> None:
+        """Order branch models before the model evaluating the runtime rule."""
+        reference_paths = {nested.reference.path for nested in data_type.all_data_types if nested.reference is not None}
+        if not reference_paths or reference_paths == {reference_path}:
+            return
+        model_extra_data = self.extra_template_data[reference_path]
+        existing = model_extra_data.get(_RUNTIME_VALIDATION_REFERENCE_CLASSES_TEMPLATE_DATA_KEY)
+        if existing is None:
+            model_extra_data[_RUNTIME_VALIDATION_REFERENCE_CLASSES_TEMPLATE_DATA_KEY] = reference_paths
+        else:
+            existing.update(reference_paths)
+
+    def _add_not_validators(  # noqa: PLR0913
+        self,
+        reference_path: str,
+        name: str,
+        obj: JsonSchemaObject,
+        path: list[str],
+        *,
+        is_root_model: bool,
+        include_references: bool = True,
+    ) -> None:
+        """Collect deterministic ``not`` rejection rules for one generated model."""
+        if not self.generate_schema_validators:
+            return
+        runtime_validation: SchemaRuntimeValidation | None = None
+        for source_index, source in enumerate(
+            self._iter_schema_validation_sources(obj, include_references=include_references)
+        ):
+            branch = self._get_not_schema(source)
+            if branch is None or branch is False:
+                continue
+            if runtime_validation is None:
+                runtime_validation = self._schema_runtime_validation(reference_path)
+            self._append_not_rule(
+                runtime_validation,
+                reference_path,
+                name,
+                source,
+                obj,
+                path,
+                source_index,
+                is_root_model=is_root_model,
+            )
+
+    def _add_not_validator_for_source(  # noqa: PLR0913, PLR0917
+        self,
+        reference_path: str,
+        name: str,
+        source: JsonSchemaObject,
+        parent: JsonSchemaObject,
+        path: list[str],
+        source_index: int,
+        *,
+        is_root_model: bool,
+    ) -> None:
+        """Collect a ``not`` rule reached through an allOf source without ref expansion."""
+        if not self.generate_schema_validators:
+            return
+        branch = self._get_not_schema(source)
+        if branch is None or branch is False:
+            return
+        runtime_validation = self._schema_runtime_validation(reference_path)
+        self._append_not_rule(
+            runtime_validation,
+            reference_path,
+            name,
+            source,
+            parent,
+            path,
+            source_index,
+            is_root_model=is_root_model,
+        )
+
     def _has_conditional_validator(self, obj: JsonSchemaObject) -> bool:
         return self._get_conditional_predicate(obj) is not None and any(
             branch.required for branch in self._iter_conditional_branches(obj)
@@ -6907,6 +7261,7 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             or self._has_conditional_validator(obj)
             or self._has_pattern_properties_validator(obj)
             or self._has_property_count_validator(obj)
+            or self._has_not_validator(obj)
         )
 
     def _has_pattern_properties_validator(self, obj: JsonSchemaObject) -> bool:
@@ -6924,6 +7279,7 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             or runtime_validation.required_groups
             or runtime_validation.conditional_required
             or runtime_validation.unique_items
+            or runtime_validation.not_rules
         )
 
     def _has_property_count_validator(self, obj: JsonSchemaObject) -> bool:
@@ -6991,7 +7347,45 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
         has_conditional_properties = any(
             branch.properties or branch.patternProperties for branch in self._iter_conditional_branches(obj)
         )
-        return bool((obj.properties or has_conditional_properties) and self._has_conditional_validator(obj))
+        if (obj.properties or has_conditional_properties) and self._has_conditional_validator(obj):
+            return True
+        return self._has_not_validator(obj) and self._not_rule_uses_object_model(obj)
+
+    def _not_rule_uses_object_model(self, obj: JsonSchemaObject) -> bool:  # noqa: PLR6301
+        """Return whether a not-bearing schema becomes an object model rather than a wrapper."""
+        return bool(obj.properties) or obj.type == "object" or bool(obj.patternProperties)
+
+    def _should_materialize_not_item(self, item: JsonSchemaObject) -> bool:
+        """Return whether an inline not-bearing item needs an executable root wrapper."""
+        return (
+            self.generate_schema_validators
+            and self.data_model_type.SUPPORTS_SCHEMA_RUNTIME_VALIDATION
+            and self._has_not_validator(item)
+            and not self._not_rule_uses_object_model(item)
+        )
+
+    def _parse_not_item_as_root_type(
+        self,
+        name: str,
+        item: JsonSchemaObject,
+        path: list[str],
+        singular_name: bool,  # noqa: FBT001
+    ) -> DataType:
+        """Parse scalar, array, union and ref not-items into a rule-carrying root model."""
+        not_item_path = get_special_path("schemaValidators/notItem", path)
+        root_name = self.model_resolver.add(
+            not_item_path,
+            name,
+            class_name=True,
+            singular_name=singular_name,
+        ).name
+        return self._parse_root_type_with_context(
+            root_name,
+            item,
+            not_item_path,
+            preserve_constraints=True,
+            use_annotated=True,
+        )
 
     def _merge_conditional_properties(self, obj: JsonSchemaObject) -> JsonSchemaObject:
         if not self.generate_schema_validators:
@@ -7886,6 +8280,14 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             base_classes,
             is_root_model=False,
         )
+        self._add_not_validators(
+            reference_path,
+            name,
+            obj,
+            path,
+            is_root_model=False,
+            include_references=False,
+        )
         if not obj.allOf:
             return
         # Inline rules belong to this model even when it has no other runtime rules.
@@ -7900,7 +8302,9 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
                     return
             elif has_core_rules:
                 continue
-            for source in self._iter_schema_validation_sources(obj, include_references=include_references):
+            for source_index, source in enumerate(
+                self._iter_schema_validation_sources(obj, include_references=include_references)
+            ):
                 if source is obj:
                     continue
                 self._add_required_groups_validator(
@@ -7916,6 +8320,15 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
                     names_by_property,
                 )
                 self._add_conditional_validator(reference_path, source, names_by_property)
+                self._add_not_validator_for_source(
+                    reference_path,
+                    name,
+                    source,
+                    obj,
+                    path,
+                    source_index,
+                    is_root_model=False,
+                )
 
     def _parse_object_common_part(  # noqa: PLR0912, PLR0913, PLR0914, PLR0915
         self,
@@ -8338,6 +8751,13 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
                 obj,
                 fields,
                 [],
+                is_root_model=True,
+            )
+            self._add_not_validators(
+                reference.path,
+                reference.name,
+                obj,
+                [reference.path],
                 is_root_model=True,
             )
         data_model_root_type = self._get_runtime_validation_root_model_type(data_model_root_type, reference.path)
@@ -9475,6 +9895,8 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             return ref_data_type
         if item.has_ref_with_schema_keywords:
             item = self._merge_ref_with_schema(item)
+        if self._should_materialize_not_item(item):
+            return self._parse_not_item_as_root_type(name, item, path, singular_name)
         if item.ref:
             return self.get_ref_data_type(item.ref)
         if item.custom_type_path:  # pragma: no cover
@@ -10701,7 +11123,10 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
             type(self) is JsonSchemaParser
             and type(obj) is JsonSchemaObject
             and obj.model_fields_set.isdisjoint(_SCHEMA_OBJECT_CHILD_FIELDS)
-            and (not self.generate_schema_validators or obj.extras.keys().isdisjoint(_CONDITIONAL_SCHEMA_KEYWORDS))
+            and (
+                not self.generate_schema_validators
+                or obj.extras.keys().isdisjoint(_CONDITIONAL_SCHEMA_KEYWORDS | {_NOT_SCHEMA_KEYWORD})
+            )
         ):
             return
         match obj.items:
@@ -10797,6 +11222,14 @@ class JsonSchemaParser(Parser["JSONSchemaParserConfig", "JsonSchemaFeatures"]):
                         callback,
                         include_one_of=include_one_of,
                     )
+            not_schema = self._get_not_schema(obj)
+            if isinstance(not_schema, JsonSchemaObject):
+                self._traverse_schema_objects(
+                    not_schema,
+                    [*path, _NOT_SCHEMA_KEYWORD],
+                    callback,
+                    include_one_of=include_one_of,
+                )
         if obj.properties:
             for key, value in obj.properties.items():
                 if isinstance(value, JsonSchemaObject):

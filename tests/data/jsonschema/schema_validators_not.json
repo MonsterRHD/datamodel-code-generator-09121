@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "BannedShape": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "banned"
+        }
+      },
+      "required": ["status"]
+    },
+    "SecretString": {
+      "type": "string",
+      "pattern": "^secret-"
+    }
+  },
+  "type": "object",
+  "title": "NotRoot",
+  "properties": {
+    "directObject": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": ["status"],
+      "not": {
+        "$ref": "#/$defs/BannedShape"
+      }
+    },
+    "scalarField": {
+      "type": "string",
+      "not": {
+        "$ref": "#/$defs/SecretString"
+      }
+    },
+    "itemsField": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": ["status"],
+        "not": {
+          "$ref": "#/$defs/BannedShape"
+        }
+      }
+    },
+    "compositionField": {
+      "not": {
+        "anyOf": [
+          {
+            "type": "integer",
+            "minimum": 100
+          },
+          {
+            "type": "string",
+            "enum": ["forbidden"]
+          }
+        ]
+      }
+    },
+    "presenceField": {
+      "type": "object",
+      "properties": {
+        "a": {
+          "type": "integer"
+        },
+        "b": {
+          "type": "integer"
+        }
+      },
+      "not": {
+        "required": ["a"]
+      },
+      "allOf": [
+        {
+          "not": {
+            "required": ["b"]
+          }
+        }
+      ]
+    },
+    "recursiveField": {
+      "$ref": "#"
+    },
+    "userName": {
+      "type": "string",
+      "not": {
+        "type": "string",
+        "const": "admin"
+      }
+    },
+    "notFalseField": {
+      "not": false
+    }
+  },
+  "required": ["directObject", "scalarField"],
+  "not": {
+    "required": ["neverField"]
+  }
+}

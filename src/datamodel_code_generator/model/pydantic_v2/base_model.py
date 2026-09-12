@@ -64,6 +64,7 @@ from datamodel_code_generator.model.pydantic_v2.imports import (
     IMPORT_MISSING,
     IMPORT_MODEL_VALIDATOR,
     IMPORT_TYPE_ADAPTER,
+    IMPORT_VALIDATION_ERROR,
     IMPORT_VALIDATION_INFO,
     IMPORT_VALIDATOR_FUNCTION_WRAP_HANDLER,
 )
@@ -1147,6 +1148,17 @@ class BaseModel(BaseModelBase):
         has_pattern_properties = any(
             runtime_validation.pattern_properties for runtime_validation in runtime_validations
         )
+        has_not_rules = any(runtime_validation.not_rules for runtime_validation in runtime_validations)
+        if has_local_core_helper and has_not_rules:
+            not_helper_imports = (
+                IMPORT_TYPE_ADAPTER,
+                IMPORT_VALIDATION_ERROR,
+                Import(from_="enum", import_="Enum"),
+                Import(from_="typing", import_="get_args"),
+            )
+            for import_ in not_helper_imports:
+                if import_ not in additional_imports:
+                    additional_imports.append(import_)
         if has_local_core_helper and (has_pattern_properties or has_unique_items_regex_paths):
             helper_validation_imports = (
                 (Import(import_="re"), IMPORT_TYPE_ADAPTER) if has_pattern_properties else (Import(import_="re"),)
@@ -1187,6 +1199,7 @@ class BaseModel(BaseModelBase):
             or runtime_validation.required_groups
             or runtime_validation.conditional_required
             or runtime_validation.unique_items
+            or runtime_validation.not_rules
         )
 
     @staticmethod
@@ -1401,6 +1414,9 @@ class BaseModel(BaseModelBase):
                 for runtime_validation in runtime_validations
                 for rule in runtime_validation.unique_items
             ),
+            "has_not_rules": any(
+                runtime_validation.not_rules for runtime_validation in runtime_validations
+            ),
         }
         if custom_template_dir is None and cls.__module__.startswith("datamodel_code_generator.model."):
             from datamodel_code_generator.model._compiled_templates import get_builtin_renderer  # noqa: PLC0415
@@ -1574,6 +1590,19 @@ class BaseModel(BaseModelBase):
         self.extra_template_data.pop("schema_runtime_validation", None)
         self._set_internal_template_data("schema_runtime_validation", runtime_validation)
         if runtime_validation.pattern_properties:
+            self.extra_template_data["force_extra_allow"] = True
+        elif runtime_validation.not_rules and not any(
+            key in self.extra_template_data
+            for key in (
+                "additionalProperties",
+                "unevaluatedProperties",
+                "allow_extra_fields",
+                "extra_fields",
+            )
+        ):
+            # The not check runs after normal parsing but must still observe
+            # properties that the positive schema merely ignores. Do not relax
+            # models that explicitly configure how extra properties behave.
             self.extra_template_data["force_extra_allow"] = True
 
     def _process_schema_runtime_validation(self) -> None:

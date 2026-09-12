@@ -29,6 +29,7 @@ IMPORT_ROOT_MODEL = Import.from_full_path("pydantic.RootModel")
 IMPORT_FIELD_VALIDATOR = Import.from_full_path("pydantic.field_validator")
 IMPORT_MODEL_VALIDATOR = Import.from_full_path("pydantic.model_validator")
 IMPORT_TYPE_ADAPTER = Import.from_full_path("pydantic.TypeAdapter")
+IMPORT_VALIDATION_ERROR = Import.from_full_path("pydantic.ValidationError")
 IMPORT_VALIDATION_INFO = Import.from_full_path("pydantic.ValidationInfo")
 IMPORT_VALIDATOR_FUNCTION_WRAP_HANDLER = Import.from_full_path("pydantic.ValidatorFunctionWrapHandler")
 

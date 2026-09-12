@@ -3853,6 +3853,7 @@ class Parser(ABC, Generic[ParserConfigT, SchemaFeaturesT]):
                             "pattern_properties",
                             "required_groups",
                             "conditional_required",
+                            "not_rules",
                         )
                     ):
                         continue

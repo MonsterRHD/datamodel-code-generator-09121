@@ -52,7 +52,7 @@ The lock stores opaque SHA-256 request-identity digests and SHA-256 body digests
 
 Schema-derived runtime validators are experimental and may change as JSON Schema coverage is expanded.
 
-The option currently targets Pydantic v2 BaseModel output and covers selected object-level rules such as patternProperties, required-only oneOf/anyOf groups, and simple if/then/else required-property conditions.
+The option currently targets Pydantic v2 BaseModel output and covers selected object-level rules such as patternProperties, required-only oneOf/anyOf groups, simple if/then/else required-property conditions, and `not` branches referencing objects, compositions, and scalar constraints. `not` validation runs in a model validator after normal field parsing; unresolvable branch references (for example a missing external file) fail generation instead of producing a partial model.
 
 ### `cli-option.install-skill`
 

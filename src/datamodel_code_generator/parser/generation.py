@@ -486,6 +486,8 @@ class GenerationIndex:
         )
         if len(additional_properties_references := model.additional_properties_reference_classes):
             reference_classes = reference_classes.union(additional_properties_references)
+        if len(runtime_validation_references := model.runtime_validation_reference_classes):
+            reference_classes = reference_classes.union(runtime_validation_references)
         self._reference_classes_cache[model_id] = reference_classes
         return reference_classes
 
@@ -507,7 +509,9 @@ class GenerationIndex:
                 if (reference := facts.data_type_facts[data_type_id].reference) is not None
             )
         if len(additional_properties_references := model.additional_properties_reference_classes):
-            return reference_classes.union(additional_properties_references)
+            reference_classes = reference_classes.union(additional_properties_references)
+        if len(runtime_validation_references := model.runtime_validation_reference_classes):
+            reference_classes = reference_classes.union(runtime_validation_references)
         return reference_classes
 
     def owner_model_for_data_type(self, data_type: DataType) -> DataModel | None:

@@ -62,5 +62,17 @@
 {%- endfor %}
     )
 {{ '\n' }}
+{%- set schema_validator_state.has_prior = true %}
+{%- endif %}
+{%- if schema_runtime_validation.not_rules %}
+{%- if schema_validator_state.has_prior %}
+{{ '\n' }}
+{%- endif %}
+    __json_schema_not_rules__: ClassVar[tuple[Any, ...]] = (
+{%- for rule in schema_runtime_validation.not_rules %}
+        {'branch': {{ rule.branch.type_hint }}, 'root_value': {{ rule.root_value|repr }}},
+{%- endfor %}
+    )
+{{ '\n' }}
 {%- endif %}
 {%- endif %}
