@@ -201,6 +201,7 @@ datamodel-codegen [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
+| [`--graphql-keep-directives`](graphql-only-options.md#graphql-keep-directives) | Preserve custom directives on generated GraphQL models and fields. |
 | [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename) | Exclude __typename field from generated GraphQL models. |
 
 ### ⚙️ General Options
@@ -324,6 +325,7 @@ All options sorted alphabetically:
 - [`--generate-prompt`](utility-options.md#generate-prompt) - Generate a prompt for consulting LLMs about CLI options
 - [`--generate-pyproject-config`](general-options.md#generate-pyproject-config) - Generate pyproject.toml configuration from CLI arguments.
 - [`--generate-schema-validators`](template-customization.md#generate-schema-validators) - Generate experimental Pydantic v2 model validators for JSON ...
+- [`--graphql-keep-directives`](graphql-only-options.md#graphql-keep-directives) - Preserve custom directives on generated GraphQL models and f...
 - [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename) - Exclude __typename field from generated GraphQL models.
 - [`--help`](utility-options.md#help) - Show help message and exit
 - [`--http-backend`](base-options.md#http-backend) - Select the HTTP client backend for remote schemas.

@@ -198,6 +198,7 @@ class GraphQLParserConfigDict(ParserConfigDict, closed=True):
     data_model_scalar_type: NotRequired[type[DataModel]]
     data_model_union_type: NotRequired[type[DataModel]]
     graphql_no_typename: NotRequired[bool]
+    graphql_keep_directives: NotRequired[bool]
 
 
 class JSONSchemaParserConfigDict(ParserConfigDict):

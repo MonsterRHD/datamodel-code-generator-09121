@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from datamodel_code_generator.imports import IMPORT_ANY, IMPORT_ENUM, IMPORT_INT_ENUM, IMPORT_STR_ENUM, Import
 from datamodel_code_generator.model import DataModel, DataModelFieldBase
 from datamodel_code_generator.model.base import UNDEFINED, BaseClassDataType
-from datamodel_code_generator.python_literal import _semantic_value_text
+from datamodel_code_generator.python_literal import _semantic_value_text, represent_python_value
 from datamodel_code_generator.types import DataType, Types
 
 if TYPE_CHECKING:
@@ -177,6 +177,37 @@ class Enum(DataModel):
                 BaseClassDataType(type=base_class),
                 *self.base_classes,
             ]
+        self._prepare_graphql_directives()
+
+    def _prepare_graphql_directives(self) -> None:
+        """Expose GraphQL directives attached to the enum and its members.
+
+        Enumerations cannot carry ``Field``/``ConfigDict`` metadata, so the
+        directive entries are rendered as ``classmethod`` accessors that stay
+        accessible without becoming enum members.
+        """
+        type_directives = self.extra_template_data.get("directives")
+        member_directives = {
+            field.name: field.extras["directives"]
+            for field in self.fields
+            if field.name and field.extras.get("directives")
+        }
+
+        directive_blocks: list[str] = []
+        if isinstance(type_directives, list) and type_directives:
+            directive_blocks.append(
+                "\n    @classmethod\n"
+                "    def graphql_directives(cls) -> list[dict[str, object]]:\n"
+                f"        return {represent_python_value(type_directives)}"
+            )
+        if member_directives:
+            directive_blocks.append(
+                "\n    @classmethod\n"
+                "    def graphql_enum_value_directives(cls) -> dict[str, list[dict[str, object]]]:\n"
+                f"        return {represent_python_value(member_directives)}"
+            )
+        if directive_blocks:
+            self._set_internal_template_data("graphql_directives_lines", directive_blocks)
 
     @classmethod
     def get_data_type(cls, types: Types, **kwargs: Any) -> DataType:

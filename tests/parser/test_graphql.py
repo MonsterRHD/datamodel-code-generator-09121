@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from datamodel_code_generator import InputFileType, generate
+from datamodel_code_generator import InputFileType, InvalidFileFormatError, generate
 from datamodel_code_generator.config import GenerateConfig, GraphQLParserConfig
 from datamodel_code_generator.model.dataclass import DataClass
 from datamodel_code_generator.parser.graphql import GraphQLParser
@@ -248,3 +248,163 @@ def test_graphql_schema_features() -> None:
             dynamic_ref=True,
         )
     )
+
+
+DIRECTIVE_SCHEMA = """
+directive @sensitive(role: String!)
+  on FIELD_DEFINITION | OBJECT | INTERFACE | INPUT_OBJECT | ENUM | ENUM_VALUE | INPUT_FIELD_DEFINITION
+directive @paginated(limit: Int = 10, flags: [Boolean!], mode: Color) on FIELD_DEFINITION
+enum Color { RED GREEN }
+interface Node @sensitive(role: "node") {
+  id: ID! @sensitive(role: "id")
+}
+type User implements Node @sensitive(role: "user") {
+  name: String @sensitive(role: "name")
+  friends: [User!] @paginated(limit: 5, flags: [true, false], mode: RED)
+}
+input UserInput @sensitive(role: "input") {
+  name: String! @sensitive(role: "iname")
+}
+enum Status {
+  ACTIVE @sensitive(role: "active")
+  INACTIVE
+}
+type Query {
+  me: User
+  palette: Status
+}
+"""
+
+
+def _generated_model(parser: GraphQLParser, name: str) -> Any:
+    """Look up a generated data model by type name."""
+    return parser.references[name].source
+
+
+def _generated_field(model: Any, name: str) -> Any:
+    """Look up a generated field by name."""
+    return next(field for field in model.fields if field.name == name)
+
+
+def test_graphql_keep_directives_parser_option_attaches_metadata() -> None:
+    """Directive name, arguments and location are attached to models and fields."""
+    parser = GraphQLParser(source=DIRECTIVE_SCHEMA, graphql_keep_directives=True)
+    parser.parse()
+
+    node = _generated_model(parser, "Node")
+    assert node.extra_template_data["model_extras"]["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "node"}, "location": "INTERFACE"}
+    ]
+    assert _generated_field(node, "id").extras["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "id"}, "location": "FIELD_DEFINITION"}
+    ]
+
+    user = _generated_model(parser, "User")
+    assert user.extra_template_data["model_extras"]["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "user"}, "location": "OBJECT"}
+    ]
+    assert _generated_field(user, "friends").extras["directives"] == [
+        {
+            "name": "paginated",
+            "arguments": {"limit": 5, "flags": [True, False], "mode": "RED"},
+            "location": "FIELD_DEFINITION",
+        }
+    ]
+
+    user_input = _generated_model(parser, "UserInput")
+    assert user_input.extra_template_data["model_extras"]["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "input"}, "location": "INPUT_OBJECT"}
+    ]
+    assert _generated_field(user_input, "name").extras["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "iname"}, "location": "INPUT_FIELD_DEFINITION"}
+    ]
+
+    status = _generated_model(parser, "Status")
+    assert not status.extra_template_data.get("directives")
+    active = _generated_field(status, "ACTIVE")
+    assert active.extras["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "active"}, "location": "ENUM_VALUE"}
+    ]
+
+
+def test_graphql_keep_directives_off_keeps_metadata_absent() -> None:
+    """The default configuration neither validates nor stores directive metadata."""
+    parser = GraphQLParser(source=DIRECTIVE_SCHEMA)
+    parser.parse()
+
+    for name in ("Node", "User", "UserInput"):
+        model = _generated_model(parser, name)
+        assert "model_extras" not in model.extra_template_data
+        assert all("directives" not in field.extras for field in model.fields)
+    status = _generated_model(parser, "Status")
+    assert "directives" not in status.extra_template_data
+    assert all("directives" not in field.extras for field in status.fields)
+
+
+def test_graphql_keep_directives_config_object() -> None:
+    """GraphQLParserConfig carries the option like other GraphQL-only flags."""
+    parser = GraphQLParser(source=DIRECTIVE_SCHEMA, config=GraphQLParserConfig(graphql_keep_directives=True))
+    assert parser.config.graphql_keep_directives is True
+    assert parser.graphql_keep_directives is True
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected_detail"),
+    [
+        ("type User { name: String @unknown }", "<input>:1:26: Unknown directive '@unknown'."),
+        (
+            'directive @d(a: String) on FIELD_DEFINITION\ntype User { name: String @d(a: "1", a: "2") }',
+            "There can be only one argument named 'a'.",
+        ),
+        (
+            "directive @d on OBJECT\ntype User { name: String @d }",
+            "Directive '@d' may not be used on field definition.",
+        ),
+    ],
+)
+def test_graphql_keep_directives_rejects_invalid_directives(schema: str, expected_detail: str) -> None:
+    """Invalid directive usage fails with a source location instead of partial output."""
+    parser = GraphQLParser(source=schema, graphql_keep_directives=True)
+    with pytest.raises(InvalidFileFormatError) as exc_info:
+        parser.parse()
+    assert expected_detail in str(exc_info.value)
+
+
+def test_graphql_keep_directives_stitched_sources_map_locations(tmp_path: Path) -> None:
+    """Joined-document errors map back to the originating external schema file."""
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir()
+    (schema_dir / "a.graphql").write_text("type A {\n  x: Int\n}\n", encoding="utf-8")
+    (schema_dir / "b.graphql").write_text("type B {\n  y: String @nope\n}\n", encoding="utf-8")
+
+    parser = GraphQLParser(source=schema_dir, graphql_keep_directives=True)
+    with pytest.raises(InvalidFileFormatError) as exc_info:
+        parser.parse()
+    message = str(exc_info.value)
+    assert "ValueError: b.graphql:2:13: Unknown directive '@nope'." in message
+    # The error detail must not attribute the failure to the other stitched file.
+    assert "a.graphql:" not in message
+
+
+def test_graphql_keep_directives_syntax_error_keeps_location() -> None:
+    """Syntax errors keep their line/column with the directive-aware build path."""
+    parser = GraphQLParser(source="type User { name: String ", graphql_keep_directives=True)
+    with pytest.raises(InvalidFileFormatError) as exc_info:
+        parser.parse()
+    assert "<input>:1:26" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("graphql_keep_directives", [False, True])
+def test_graphql_keep_directives_accepts_declared_directives(graphql_keep_directives: bool) -> None:
+    """Declared directives build successfully regardless of the preservation option."""
+    parser = GraphQLParser(
+        source="directive @d on OBJECT\ntype User @d { name: String }",
+        graphql_keep_directives=graphql_keep_directives,
+    )
+    parser.parse()
+    user = _generated_model(parser, "User")
+    stored = user.extra_template_data.get("model_extras")
+    if graphql_keep_directives:
+        assert stored["directives"] == [{"name": "d", "arguments": {}, "location": "OBJECT"}]
+    else:
+        assert not stored

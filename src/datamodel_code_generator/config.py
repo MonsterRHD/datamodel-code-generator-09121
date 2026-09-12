@@ -307,6 +307,7 @@ class GraphQLParserConfig(ParserConfig):
     data_model_scalar_type: type[DataModel] = DataTypeScalar
     data_model_union_type: type[DataModel] = DataTypeUnion
     graphql_no_typename: bool = False
+    graphql_keep_directives: bool = False
 
 
 class JSONSchemaParserConfig(ParserConfig):

@@ -95,6 +95,7 @@ _DATACLASS_ARGUMENT_NAMES: frozenset[str] = frozenset({
 _BUILTIN_TEMPLATE_INTERNAL_DATA_KEYS: frozenset[str] = frozenset({
     "class_body_lines",
     "config_items",
+    "graphql_directives_lines",
     "schema_runtime_validation",
     "schema_runtime_validation_base_class_name",
     "schema_runtime_validation_use_base",

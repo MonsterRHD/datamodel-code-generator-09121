@@ -1358,6 +1358,15 @@ graphql_options.add_argument(
     action="store_true",
     default=None,
 )
+graphql_options.add_argument(
+    "--graphql-keep-directives",
+    help="Preserve custom GraphQL directives on types, fields, input objects, interfaces and enum values. "
+    "The directive name, arguments and location are attached to the generated models and field metadata. "
+    "Unknown directives, duplicate arguments and invalid external schema references fail the generation "
+    "with their source location before any output files are written.",
+    action="store_true",
+    default=None,
+)
 
 # ======================================================================================
 # General options

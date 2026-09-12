@@ -182,6 +182,7 @@
 - `--validation`: Enable validation constraints (deprecated, use --field-constraints).
 
 ### GraphQL-only Options
+- `--graphql-keep-directives`: Preserve custom directives on generated GraphQL models and fields.
 - `--graphql-no-typename`: Exclude __typename field from generated GraphQL models.
 
 ### General Options

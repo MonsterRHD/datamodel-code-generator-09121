@@ -1,0 +1,5 @@
+directive @d(a: String) on FIELD_DEFINITION
+
+type User {
+  name: String @d(a: "1", a: "2")
+}

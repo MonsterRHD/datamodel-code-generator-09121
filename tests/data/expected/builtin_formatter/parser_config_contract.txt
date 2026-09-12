@@ -145,6 +145,7 @@ reviewed-safe wrap_string_literal
 [GraphQLParserConfig]
 guarded data_model_scalar_type
 guarded data_model_union_type
+reviewed-safe graphql_keep_directives
 reviewed-safe graphql_no_typename
 
 [JSONSchemaParserConfig]

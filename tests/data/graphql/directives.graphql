@@ -1,0 +1,27 @@
+directive @sensitive(role: String!) on FIELD_DEFINITION | OBJECT | INTERFACE | INPUT_OBJECT | ENUM | ENUM_VALUE | INPUT_FIELD_DEFINITION
+directive @paginated(limit: Int = 20) on FIELD_DEFINITION
+directive @tags(values: [String!]!) on ENUM_VALUE
+
+interface Node @sensitive(role: "node") {
+  id: ID! @sensitive(role: "id")
+}
+
+type User implements Node @sensitive(role: "user") {
+  name: String @sensitive(role: "name") @deprecated(reason: "use fullName")
+  friends: [User!] @paginated(limit: 50)
+}
+
+input UserInput @sensitive(role: "input") {
+  name: String! @sensitive(role: "iname")
+}
+
+enum Color @sensitive(role: "enum") {
+  RED @tags(values: ["warm", "stop"])
+  GREEN
+  BLUE @sensitive(role: "blue")
+}
+
+type Query {
+  me: User
+  palette: Color
+}

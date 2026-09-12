@@ -14,7 +14,7 @@ This documentation is auto-generated from test cases.
 | 🏗️ [Model Customization](model-customization.md) | 44 | Model generation behavior |
 | 🎨 [Template Customization](template-customization.md) | 27 | Output formatting and custom rendering |
 | 📘 [OpenAPI-only Options](openapi-only-options.md) | 8 | OpenAPI-specific features |
-| 📋 [GraphQL-only Options](graphql-only-options.md) | 1 |  |
+| 📋 [GraphQL-only Options](graphql-only-options.md) | 2 |  |
 | ⚙️ [General Options](general-options.md) | 24 | Utilities and meta options |
 | 📝 [Utility Options](utility-options.md) | 15 | Help, version, debug options |
 
@@ -155,6 +155,7 @@ These links are generated from CLI option metadata and summarize options that im
 - [`--generate-prompt`](utility-options.md#generate-prompt)
 - [`--generate-pyproject-config`](general-options.md#generate-pyproject-config)
 - [`--generate-schema-validators`](template-customization.md#generate-schema-validators)
+- [`--graphql-keep-directives`](graphql-only-options.md#graphql-keep-directives)
 - [`--graphql-no-typename`](graphql-only-options.md#graphql-no-typename)
 
 ### H {#h}

@@ -6,6 +6,7 @@ objects, interfaces, enums, scalars, inputs, and union types.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -14,6 +15,8 @@ from typing import (
     cast,
 )
 
+from graphql.language import ast as gql_ast
+from graphql.validation.validate import validate_sdl
 from typing_extensions import Unpack
 
 from datamodel_code_generator import (
@@ -39,7 +42,6 @@ except ImportError as exc:  # pragma: no cover
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
     from urllib.parse import ParseResult
 
@@ -56,13 +58,151 @@ except AttributeError:
     graphql_resolver_kind = graphql.type.introspection.TypeFields.kind
 
 
-def build_graphql_schema(schema_str: str, *, source: str | None = None) -> graphql.GraphQLSchema:
-    """Build a graphql schema from a string."""
+@dataclass(frozen=True, slots=True)
+class _GraphQLSourceSegment:
+    """A stitched GraphQL source and the line range it occupies in the joined document."""
+
+    name: str
+    start_line: int
+    line_count: int
+
+    def locate(self, line: int) -> tuple[str, int]:
+        """Map a joined-document line number back to this source and its local line."""
+        if line > self.start_line + self.line_count - 1:
+            return self.name, self.line_count + 1
+        return self.name, line - self.start_line + 1
+
+
+def _segment_for_line(
+    line: int,
+    segments: "tuple[_GraphQLSourceSegment, ...]",
+) -> tuple[str, int] | None:
+    """Resolve a joined-document line to the originating source segment."""
+    if not segments:
+        return None
+    for segment in segments:
+        if segment.start_line <= line < segment.start_line + segment.line_count:
+            return segment.locate(line)
+    return segments[-1].locate(line)
+
+
+def _format_graphql_error_location(
+    locations: "list[graphql.SourceLocation] | None",
+    segments: "tuple[_GraphQLSourceSegment, ...]",
+) -> str:
+    """Render error locations, remapping stitched sources back to their original files."""
+    if not locations:
+        return ""
+    rendered: list[str] = []
+    for location in locations:
+        resolved = _segment_for_line(location.line, segments)
+        if resolved is None:
+            rendered.append(f"{location.line}:{location.column}")
+        else:
+            source_name, local_line = resolved
+            rendered.append(f"{source_name}:{local_line}:{location.column}")
+    return ", ".join(rendered)
+
+
+def _format_graphql_error(
+    error: "graphql.GraphQLError",
+    segments: "tuple[_GraphQLSourceSegment, ...]",
+) -> str:
+    """Render a single GraphQL error with source-mapped locations."""
+    location_detail = _format_graphql_error_location(getattr(error, "locations", None), segments)
+    message = getattr(error, "message", None) or str(error)
+    return f"{location_detail}: {message}" if location_detail else message
+
+
+def build_graphql_schema(
+    schema_str: str,
+    *,
+    source: str | None = None,
+    keep_directives: bool = False,  # noqa: FBT001, FBT002
+    segments: "tuple[_GraphQLSourceSegment, ...]" = (),
+) -> graphql.GraphQLSchema:
+    """Build a graphql schema from a string.
+
+    When ``keep_directives`` is enabled the SDL is parsed and validated before
+    construction so unknown directives, duplicate directive arguments and
+    stitched-schema failures can be reported with their originating source
+    locations.  The legacy ``build_schema`` path is kept unchanged otherwise.
+    """
+    if not keep_directives:
+        try:
+            schema = graphql.build_schema(schema_str)
+        except graphql.GraphQLSyntaxError as exc:
+            raise InvalidFileFormatError(exc, InputFileType.GraphQL, source=source) from exc
+        return graphql.lexicographic_sort_schema(schema)
+
     try:
-        schema = graphql.build_schema(schema_str)
+        document = graphql.parse(schema_str)
     except graphql.GraphQLSyntaxError as exc:
-        raise InvalidFileFormatError(exc, InputFileType.GraphQL, source=source) from exc
+        raise InvalidFileFormatError(
+            ValueError(_format_graphql_error(exc, segments)),
+            InputFileType.GraphQL,
+            source=source,
+        ) from exc
+
+    errors = validate_sdl(document)
+    if errors:
+        detail = "\n".join(_format_graphql_error(error, segments) for error in errors)
+        raise InvalidFileFormatError(ValueError(detail), InputFileType.GraphQL, source=source)
+
+    try:
+        schema = graphql.build_ast_schema(document, assume_valid=True)
+    except Exception as exc:  # noqa: BLE001 - surface construction failures with source context
+        node_locations = [
+            graphql.SourceLocation(
+                line=node.loc.start_token.line,
+                column=node.loc.start_token.column,
+            )
+            for node in getattr(exc, "nodes", ()) or ()
+            if getattr(node, "loc", None) is not None
+        ]
+        location_detail = _format_graphql_error_location(node_locations, segments)
+        detail = f"{location_detail}: {exc}" if location_detail else str(exc)
+        raise InvalidFileFormatError(ValueError(detail), InputFileType.GraphQL, source=source) from exc
+
     return graphql.lexicographic_sort_schema(schema)
+
+
+def _directive_argument_value(node: gql_ast.ValueNode) -> Any:
+    """Convert a GraphQL directive argument AST value into a plain Python value."""
+    if isinstance(node, gql_ast.IntValueNode):
+        return int(node.value)
+    if isinstance(node, gql_ast.FloatValueNode):
+        return float(node.value)
+    if isinstance(node, gql_ast.NullValueNode):
+        return None
+    if isinstance(node, gql_ast.ListValueNode):
+        return [_directive_argument_value(value) for value in node.values]
+    if isinstance(node, gql_ast.ObjectValueNode):
+        return {field.name.value: _directive_argument_value(field.value) for field in node.fields}
+    # StringValueNode (incl. block strings), BooleanValueNode and EnumValueNode
+    # all expose their lexical value as ``.value``; enum identifiers are kept
+    # as plain strings.
+    return cast("str", node.value)
+
+
+def _build_directive_entries(location: str, *ast_nodes: gql_ast.Node | None) -> list[dict[str, Any]]:
+    """Collect directive name/arguments/location entries from definition AST nodes."""
+    entries: list[dict[str, Any]] = []
+    for ast_node in ast_nodes:
+        if ast_node is None:
+            continue
+        entries.extend(
+            {
+                "name": directive.name.value,
+                "arguments": {
+                    argument.name.value: _directive_argument_value(argument.value)
+                    for argument in directive.arguments
+                },
+                "location": location,
+            }
+            for directive in ast_node.directives
+        )
+    return entries
 
 
 @snooper_to_methods()
@@ -123,6 +263,7 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         self.data_model_union_type = self.config.data_model_union_type
         self.use_standard_collections = self.config.use_standard_collections
         self.use_union_operator = self.config.use_union_operator
+        self.graphql_keep_directives = self.config.graphql_keep_directives
 
     def _resolve_types(self, paths: list[str], schema: graphql.GraphQLSchema) -> None:
         root_types = {schema.query_type, schema.mutation_type, schema.subscription_type}
@@ -195,8 +336,42 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         """Return whether a GraphQL input field defines a schema default."""
         return isinstance(field, graphql.GraphQLInputField) and field.default_value != graphql.pyutils.Undefined
 
+    def _type_directive_entries(
+        self,
+        location: str,
+        graphql_object: graphql.GraphQLNamedType,
+    ) -> list[dict[str, Any]]:
+        """Return directive entries declared on a type definition and its extensions."""
+        if not self.graphql_keep_directives:
+            return []
+        return _build_directive_entries(
+            location,
+            getattr(graphql_object, "ast_node", None),
+            *getattr(graphql_object, "extension_ast_nodes", ()) or (),
+        )
+
+    def _store_type_directives(self, type_name: str, entries: list[dict[str, Any]]) -> None:
+        """Attach type-level directive metadata to the model's template data."""
+        if entries:
+            self.extra_template_data[self.references[type_name].path]["directives"] = entries
+
+    def _field_directive_extras(
+        self,
+        field: graphql.GraphQLField | graphql.GraphQLInputField,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Build field extras carrying directives on a field or input field definition."""
+        if not self.graphql_keep_directives or field.ast_node is None:
+            return {}
+        location = (
+            "INPUT_FIELD_DEFINITION" if isinstance(field, graphql.GraphQLInputField) else "FIELD_DEFINITION"
+        )
+        entries = _build_directive_entries(location, field.ast_node)
+        return {"directives": entries} if entries else {}
+
     def parse_scalar(self, scalar_graphql_object: graphql.GraphQLScalarType) -> None:
         """Parse a GraphQL scalar type and add it to results."""
+        entries = self._type_directive_entries("SCALAR", scalar_graphql_object)
+        self._store_type_directives(scalar_graphql_object.name, entries)
         self.generation_store.register_model(
             self.data_model_scalar_type(
                 reference=self.references[scalar_graphql_object.name],
@@ -225,6 +400,10 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
     def parse_enum_as_str_type(self, enum_object: graphql.GraphQLEnumType) -> None:
         """Parse enum as a str type alias when ignoring enum constraints."""
+        self._store_type_directives(
+            enum_object.name,
+            self._type_directive_entries("ENUM", enum_object),
+        )
         data_type = self.data_type_manager.get_data_type(Types.string)
         data_model_type = self._create_data_model(
             model_type=self.data_model_root_type,
@@ -246,6 +425,10 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
     def parse_enum_as_literal(self, enum_object: graphql.GraphQLEnumType) -> None:
         """Parse enum values as a Literal type."""
+        self._store_type_directives(
+            enum_object.name,
+            self._type_directive_entries("ENUM", enum_object),
+        )
         data_type = self.data_type(literals=list(enum_object.values.keys()))
         data_model_type = self._create_data_model(
             model_type=self.data_model_root_type,
@@ -267,6 +450,10 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
     def parse_enum_as_enum_class(self, enum_object: graphql.GraphQLEnumType) -> None:
         """Parse enum values as an Enum class."""
+        self._store_type_directives(
+            enum_object.name,
+            self._type_directive_entries("ENUM", enum_object),
+        )
         enum_fields: list[DataModelFieldBase] = []
         exclude_field_names: set[str] = set()
 
@@ -277,6 +464,12 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
                 value_name, excludes=exclude_field_names, model_type=ModelType.ENUM
             )
             exclude_field_names.add(field_name)
+
+            field_kwargs: dict[str, Any] = {}
+            if self.graphql_keep_directives and value.ast_node is not None:
+                member_entries = _build_directive_entries("ENUM_VALUE", value.ast_node)
+                if member_entries:
+                    field_kwargs["extras"] = {"directives": member_entries}
 
             enum_fields.append(
                 self.data_model_field_type(
@@ -290,6 +483,7 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
                     has_default=True,
                     use_field_description=value.description is not None,
                     original_name=None,
+                    **field_kwargs,
                     **self._data_model_field_common_kwargs(),
                 )
             )
@@ -310,6 +504,7 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
             description=enum_object.description,
             type_=Types.string if self.use_subclass_enum else None,
             custom_template_dir=self.custom_template_dir,
+            extra_template_data=self.extra_template_data,
         )
         self.generation_store.register_model(enum)
 
@@ -379,6 +574,8 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         if field.description is not None:  # pragma: no cover
             extras["description"] = field.description
 
+        extras.update(self._field_directive_extras(field))
+
         single_alias, validation_aliases = self._split_field_alias(alias)
         return self.data_model_field_type(
             name=field_name,
@@ -442,6 +639,21 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
                 self._typename_collisions = []
             self._typename_collisions.append(obj)
 
+        if self.graphql_keep_directives:
+            if isinstance(obj, graphql.GraphQLObjectType):
+                type_location = "OBJECT"
+            elif isinstance(obj, graphql.GraphQLInterfaceType):
+                type_location = "INTERFACE"
+            else:
+                type_location = "INPUT_OBJECT"
+            type_directives = _build_directive_entries(
+                type_location, obj.ast_node, *obj.extension_ast_nodes
+            )
+            if type_directives:
+                template_data = self.extra_template_data[self.references[obj.name].path]
+                existing_model_extras = cast("dict[str, Any]", template_data.get("model_extras") or {})
+                template_data["model_extras"] = {**existing_model_extras, "directives": type_directives}
+
         data_model_type = self._create_data_model(
             reference=self.references[obj.name],
             fields=fields,
@@ -471,6 +683,10 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
 
     def parse_union(self, union_object: graphql.GraphQLUnionType) -> None:
         """Parse a GraphQL union type and add it to results."""
+        self._store_type_directives(
+            union_object.name,
+            self._type_directive_entries("UNION", union_object),
+        )
         fields = [
             self.data_model_field_type(
                 name=self.references[type_.name].name,
@@ -516,17 +732,28 @@ class GraphQLParser(Parser["GraphQLParserConfig", "JsonSchemaFeatures"]):
         }
 
         source_paths: list[str] = []
-
-        def iter_source_texts() -> Iterator[str]:
-            for source in self.iter_source:
-                display_path = self._source_path_for_diagnostics(source.path)
-                if display_path != "<input>":
-                    source_paths.append(display_path)
-                yield source.text
+        source_texts: list[str] = []
+        source_segments: list[_GraphQLSourceSegment] = []
+        next_start_line = 1
+        for source in self.iter_source:
+            display_path = self._source_path_for_diagnostics(source.path)
+            if display_path != "<input>":
+                source_paths.append(display_path)
+            source_texts.append(source.text)
+            source_segments.append(
+                _GraphQLSourceSegment(
+                    name=display_path,
+                    start_line=next_start_line,
+                    line_count=source.text.count("\n") + 1,
+                )
+            )
+            next_start_line += source.text.count("\n") + 1
 
         schema: graphql.GraphQLSchema = build_graphql_schema(
-            "\n".join(iter_source_texts()),
+            "\n".join(source_texts),
             source=", ".join(source_paths) or "<input>",
+            keep_directives=self.graphql_keep_directives,
+            segments=tuple(source_segments),
         )
         self.raw_obj = schema
 

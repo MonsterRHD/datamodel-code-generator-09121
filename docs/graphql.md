@@ -220,6 +220,57 @@ class A(BaseModel):
 
 ---
 
+## 🏷️ Preserving Custom Directives
+
+Custom directives on type definitions, fields, interfaces (including fields inherited
+by implementing types), input objects and enum values are ignored by default. Pass
+`--graphql-keep-directives` to preserve the directive name, arguments and application
+location on the generated models and fields:
+
+```bash
+datamodel-codegen \
+    --input schema.graphql \
+    --input-file-type graphql \
+    --output-model-type pydantic_v2.BaseModel \
+    --graphql-keep-directives \
+    --output model.py
+```
+
+Type and field directives are exposed through Pydantic's `json_schema_extra`, and
+directives on enum types and enum values are exposed through classmethod accessors:
+
+```python
+class Book(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            'directives': [{'name': 'sensitive', 'arguments': {'role': 'book'}, 'location': 'OBJECT'}]
+        },
+    )
+    title: str = Field(
+        ...,
+        json_schema_extra={
+            'directives': [{'name': 'sensitive', 'arguments': {'role': 'title'}, 'location': 'FIELD_DEFINITION'}]
+        },
+    )
+
+class Color(Enum):
+    RED = 'RED'
+
+    @classmethod
+    def graphql_directives(cls) -> list[dict[str, object]]: ...
+
+    @classmethod
+    def graphql_enum_value_directives(cls) -> dict[str, list[dict[str, object]]]: ...
+```
+
+Directive arguments are converted to plain Python values (`Int`/`Float` to numbers,
+strings/booleans/enum identifiers to strings, lists and input objects to lists and
+dicts, `null` to `None`). When enabled, unknown directives, duplicate directive
+arguments and stitched external schema failures abort generation with their source
+location before any output file is written; the schema can be fixed and regenerated.
+
+---
+
 ## 🚫 Excluding __typename Field
 
 When using generated models for GraphQL mutations, the `__typename` field may cause issues
@@ -264,6 +315,7 @@ class Book(BaseModel):
 | Enums | Generated as Python enum types |
 | Scalars | Built-in scalars map to Python aliases; custom scalars can be configured |
 | Lists and non-null markers | Converted into Python collection and optionality annotations |
+| Custom directives | Ignored by default; preserved as model/field metadata with `--graphql-keep-directives` |
 | `__typename` | Included by default and removable with `--graphql-no-typename` |
 
 ## Limitations

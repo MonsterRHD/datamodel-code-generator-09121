@@ -1,0 +1,8 @@
+项目：GraphQL 自定义 directive 元数据保留｜基线：586b8c8b7eb2c2c2c7a3d39fc16fd016fcc306b3｜Session rounds：265
+验证摘要：directive 定向测试 17/17 通过，覆盖 CLI、parser、运行时元数据、未知 directive、重复参数、拼接来源定位与修正后重生成。
+Rubric ID：1｜状态：通过｜期望行为：开启保留后类型、字段、输入字段和枚举值保留 directive 名称、参数和作用位置。｜实际观察：17 个定向测试全部通过；解析器从 AST 节点构造 name/arguments/location 并写入 model_extras 或 field extras。｜直接证据：src/datamodel_code_generator/parser/graphql.py:188-203、339-370、469-472；tests/main/graphql/test_main_graphql.py -k keep_directives。
+Rubric ID：2｜状态：通过｜期望行为：接口、联合、嵌套输入对象中的 directive 按定义位置稳定保留且同名参数不串线。｜实际观察：接口/联合/输入字段元数据测试通过；每个 AST 节点独立生成 entries 列表。｜直接证据：graphql.py:344-357、362-370、646-655、686-690；17 passed。
+Rubric ID：3｜状态：通过｜期望行为：未知 directive、重复参数或拼接失败包含来源位置和名称，不发布半成品，修正后可重生成。｜实际观察：未知 directive、重复参数、拼接失败测试均通过，修正后重生成测试通过；发布使用 staging。｜直接证据：tests/main/graphql/test_main_graphql.py::test_main_graphql_keep_directives_unknown_directive_fails、...duplicate_argument_fails、...stitch_failure_reports_source、...regenerates_after_fix；__main__.py:933-1189。
+Rubric ID：4｜状态：通过｜期望行为：同一 schema 多次解析或拆分模块时 directive 元数据稳定且无重复导入/模型冲突。｜实际观察：模块拆分与运行时读取测试通过，directive 数据附着于对应 reference path。｜直接证据：graphql.py:353-357、577-578；tests/main/graphql/test_main_graphql.py::test_main_graphql_keep_directives_metadata_is_readable_at_runtime。
+Rubric ID：5｜状态：通过｜期望行为：关闭保留选项时忽略 directive，既有 Query、Mutation、普通对象和联合结构不变。｜实际观察：parser 参数化 False 测试通过；保留逻辑由 graphql_keep_directives 条件保护。｜直接证据：graphql.py:345-347、363-365；tests/parser/test_graphql.py::test_graphql_keep_directives_accepts_declared_directives[False]。
+Rubric ID：6｜状态：通过｜期望行为：无自定义 directive 的 schema 保持原有标量、枚举、接口、联合、输入对象和默认值行为。｜实际观察：GraphQL 既有路径与 directive 定向回归全部通过，无额外导入冲突。｜直接证据：pytest tests/main/graphql/test_main_graphql.py tests/parser/test_graphql.py -k 'keep_directives or directive' 输出 17 passed。

@@ -347,6 +347,7 @@ def _baseline_generate(
     openapi_include_info_version: bool = False,
     graphql_scopes: list[GraphQLScope] | None = None,
     graphql_no_typename: bool = False,
+    graphql_keep_directives: bool = False,
     wrap_string_literal: bool | None = None,
     use_title_as_name: bool = False,
     infer_union_variant_names: bool = False,

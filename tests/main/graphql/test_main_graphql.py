@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
 from typing import TYPE_CHECKING
 
 import black
 import pytest
 
+from datamodel_code_generator.__main__ import Exit
 from tests.main.conftest import (
     DEFAULT_VALUES_DATA_PATH,
     EXPECTED_GRAPHQL_PATH,
@@ -1085,3 +1088,195 @@ def test_main_graphql_no_typename(output_file: Path) -> None:
         expected_file="no_typename.py",
         extra_args=["--graphql-no-typename"],
     )
+
+
+@pytest.mark.cli_doc(
+    options=["--graphql-keep-directives"],
+    option_description="""Preserve custom directives on generated GraphQL models and fields.
+
+The `--graphql-keep-directives` flag keeps the directive name, arguments and
+application location on type definitions, interfaces (including fields inherited
+by implementing types), input objects and enum values. Type and field metadata
+is exposed through pydantic `json_schema_extra`; enums expose classmethod
+accessors. Unknown directives, duplicate directive arguments and stitched
+schema failures abort generation with their source location before any output
+file is written.""",
+    input_schema="graphql/directives.graphql",
+    cli_args=["--graphql-keep-directives"],
+    golden_output="graphql/directives.py",
+)
+def test_main_graphql_keep_directives(output_file: Path) -> None:
+    """Attach directive metadata to types, fields and enum values when enabled."""
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "directives.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        assert_func=assert_file_content,
+        expected_file="directives.py",
+        extra_args=["--graphql-keep-directives"],
+    )
+
+
+@pytest.mark.allow_direct_assert
+def test_main_graphql_keep_directives_metadata_is_readable_at_runtime(output_file: Path) -> None:
+    """Generated models expose the preserved directives through stable metadata channels."""
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "directives.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        expected_file=None,
+        extra_args=["--graphql-keep-directives"],
+        skip_code_validation=True,
+    )
+
+    module_name = "generated_graphql_keep_directives"
+    spec = importlib.util.spec_from_file_location(module_name, output_file)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    # Type-level directives land in ConfigDict json_schema_extra.
+    assert module.Node.model_config["json_schema_extra"]["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "node"}, "location": "INTERFACE"}
+    ]
+    assert module.User.model_config["json_schema_extra"]["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "user"}, "location": "OBJECT"}
+    ]
+    assert module.UserInput.model_config["json_schema_extra"]["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "input"}, "location": "INPUT_OBJECT"}
+    ]
+
+    # Field directives land in FieldInfo json_schema_extra, including inherited
+    # interface fields and the built-in @deprecated directive.
+    assert module.Node.model_fields["id"].json_schema_extra["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "id"}, "location": "FIELD_DEFINITION"}
+    ]
+    assert module.User.model_fields["id"].json_schema_extra["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "id"}, "location": "FIELD_DEFINITION"}
+    ]
+    assert module.User.model_fields["name"].json_schema_extra["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "name"}, "location": "FIELD_DEFINITION"},
+        {"name": "deprecated", "arguments": {"reason": "use fullName"}, "location": "FIELD_DEFINITION"},
+    ]
+    assert module.User.model_fields["friends"].json_schema_extra["directives"] == [
+        {"name": "paginated", "arguments": {"limit": 50}, "location": "FIELD_DEFINITION"}
+    ]
+    assert module.UserInput.model_fields["name"].json_schema_extra["directives"] == [
+        {"name": "sensitive", "arguments": {"role": "iname"}, "location": "INPUT_FIELD_DEFINITION"}
+    ]
+
+    # Enum type and enum value directives use classmethod accessors and never
+    # become enum members (enum members are sorted lexicographically).
+    assert {member.name for member in module.Color} == {"RED", "GREEN", "BLUE"}
+    assert module.Color.graphql_directives() == [
+        {"name": "sensitive", "arguments": {"role": "enum"}, "location": "ENUM"}
+    ]
+    assert module.Color.graphql_enum_value_directives() == {
+        "RED": [{"name": "tags", "arguments": {"values": ["warm", "stop"]}, "location": "ENUM_VALUE"}],
+        "BLUE": [{"name": "sensitive", "arguments": {"role": "blue"}, "location": "ENUM_VALUE"}],
+    }
+
+
+def test_main_graphql_directives_ignored_by_default(output_file: Path) -> None:
+    """Directives disappear from generated code when the option stays disabled."""
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "directives.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        assert_func=assert_file_content,
+        expected_file="directives_ignored.py",
+    )
+
+
+def test_main_graphql_keep_directives_unknown_directive_fails(
+    output_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unknown directives abort generation with the source location and no output file."""
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "directives-unknown.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        expected_exit=Exit.ERROR,
+        expected_stderr_contains="directives-unknown.graphql:2:16: Unknown directive '@unknown'.",
+        file_should_not_exist=output_file,
+        capsys=capsys,
+        extra_args=["--graphql-keep-directives"],
+    )
+
+
+def test_main_graphql_keep_directives_duplicate_argument_fails(
+    output_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Duplicate directive arguments abort generation with both source locations."""
+    run_main_and_assert(
+        input_path=GRAPHQL_DATA_PATH / "directives-duplicate-argument.graphql",
+        output_path=output_file,
+        input_file_type="graphql",
+        expected_exit=Exit.ERROR,
+        expected_stderr_contains="There can be only one argument named 'a'.",
+        file_should_not_exist=output_file,
+        capsys=capsys,
+        extra_args=["--graphql-keep-directives"],
+    )
+
+
+def test_main_graphql_keep_directives_stitch_failure_reports_source(
+    output_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Failures in stitched external schemas point at the originating file and line."""
+    schema_dir = tmp_path / "schemas"
+    schema_dir.mkdir()
+    (schema_dir / "a.graphql").write_text("type A {\n  x: Int @nope\n}\n", encoding="utf-8")
+    (schema_dir / "b.graphql").write_text("type B {\n  y: String\n}\n", encoding="utf-8")
+
+    run_main_and_assert(
+        input_path=schema_dir,
+        output_path=output_file,
+        input_file_type="graphql",
+        expected_exit=Exit.ERROR,
+        expected_stderr_contains="a.graphql:2:10: Unknown directive '@nope'.",
+        file_should_not_exist=output_file,
+        capsys=capsys,
+        extra_args=["--graphql-keep-directives"],
+    )
+
+
+@pytest.mark.allow_direct_assert
+def test_main_graphql_keep_directives_regenerates_after_fix(
+    output_file: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fixing the reported issue lets generation succeed and publishes the output file."""
+    schema_path = tmp_path / "schema.graphql"
+    schema_path.write_text("type User {\n  name: String @unknown\n}\n", encoding="utf-8")
+
+    run_main_and_assert(
+        input_path=schema_path,
+        output_path=output_file,
+        input_file_type="graphql",
+        expected_exit=Exit.ERROR,
+        expected_stderr_contains="schema.graphql:2:16: Unknown directive '@unknown'.",
+        file_should_not_exist=output_file,
+        capsys=capsys,
+        extra_args=["--graphql-keep-directives"],
+    )
+
+    schema_path.write_text(
+        "directive @unknown on FIELD_DEFINITION\n\ntype User {\n  name: String @unknown\n}\n",
+        encoding="utf-8",
+    )
+
+    run_main_and_assert(
+        input_path=schema_path,
+        output_path=output_file,
+        input_file_type="graphql",
+        expected_file=None,
+        extra_args=["--graphql-keep-directives"],
+        skip_code_validation=True,
+    )
+    content = output_file.read_text(encoding="utf-8")
+    assert "'name': 'unknown'" in content

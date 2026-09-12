@@ -155,6 +155,7 @@ class BaseGenerateConfig(BaseModel):
     openapi_include_paths: list[str] | None = None
     openapi_include_info_version: bool = False
     graphql_no_typename: bool = False
+    graphql_keep_directives: bool = False
     wrap_string_literal: bool | None = None
     use_title_as_name: bool = False
     infer_union_variant_names: bool = False

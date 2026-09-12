@@ -70,6 +70,7 @@ OPTION_DESCRIPTIONS: dict[str, str] = {
     "--generate-cli-command": "Generate CLI command from pyproject.toml configuration.",
     "--generate-pyproject-config": "Generate pyproject.toml configuration from CLI arguments.",
     "--generate-schema-validators": "Generate experimental Pydantic v2 model validators for JSON Schema runtime rules.",
+    "--graphql-keep-directives": "Preserve custom GraphQL directives on generated models and field metadata.",
     "--graphql-no-typename": "Exclude __typename field from generated GraphQL models.",
     "--http-backend": "Select the HTTP client backend for remote schemas.",
     "--http-headers": "Fetch a schema from a URL with custom HTTP headers.",

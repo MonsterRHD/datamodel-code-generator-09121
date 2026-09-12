@@ -888,6 +888,7 @@ CLI_OPTION_META: dict[str, CLIOptionMeta] = {
     # GraphQL-only Options
     # ==========================================================================
     "--graphql-no-typename": CLIOptionMeta(name="--graphql-no-typename", category=OptionCategory.GRAPHQL),
+    "--graphql-keep-directives": CLIOptionMeta(name="--graphql-keep-directives", category=OptionCategory.GRAPHQL),
     # ==========================================================================
     # General Options
     # ==========================================================================

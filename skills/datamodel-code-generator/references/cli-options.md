@@ -207,6 +207,7 @@ OpenAPI-specific generation behavior.
 GraphQL-specific generation behavior.
 
 - `--graphql-no-typename`: Exclude __typename field from generated GraphQL models. Useful when using generated models for GraphQL mutations.
+- `--graphql-keep-directives`: Preserve custom GraphQL directives on types, fields, input objects, interfaces and enum values. The directive name, arguments and location are attached to the generated models and field metadata. Unknown directives, duplicate arguments and invalid external schema references fail the generation with their source location before any output files are written.
 
 ## General Options
 
